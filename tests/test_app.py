@@ -89,6 +89,32 @@ def test_mcp_tool_catalog_is_available_without_oauth():
     }
 
 
+def test_mcp_tools_declare_custom_oauth_scopes():
+    tools = {tool["name"]: tool for tool in app.mcp_tools()}
+    assert tools["list_symptom_entries"]["securitySchemes"] == [
+        {"type": "oauth2", "scopes": ["planelocket-symptoms/read"]}
+    ]
+    for name in ("log_symptoms", "update_symptom_entry", "delete_symptom_entry"):
+        expected = [{"type": "oauth2", "scopes": ["planelocket-symptoms/write"]}]
+        assert tools[name]["securitySchemes"] == expected
+        assert tools[name]["_meta"]["securitySchemes"] == expected
+
+
+def test_mcp_tool_call_returns_authentication_metadata_without_token():
+    event = api_event("POST", "/mcp", {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {"name": "list_symptom_entries", "arguments": {}},
+    })
+    result = app.lambda_handler(event, None)
+    payload = json.loads(result["body"])
+    assert result["statusCode"] == 200
+    auth = payload["result"]["_meta"]["mcp/www_authenticate"][0]
+    assert "resource_metadata=" in auth
+    assert 'error="insufficient_scope"' in auth
+
+
 def test_empty_mcp_probe_receives_oauth_challenge():
     result = app.lambda_handler(api_event("POST", "/mcp"), None)
     assert result["statusCode"] == 401
@@ -102,4 +128,3 @@ def test_openapi_arrays_define_items():
     for value in properties.values():
         if value.get("type") == "array":
             assert "items" in value
-
