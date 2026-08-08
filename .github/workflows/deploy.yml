@@ -1,0 +1,57 @@
+name: Deploy Symptom Relay
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: symptom-relay-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      OAUTH_CALLBACK_URL: ${{ vars.MCP_OAUTH_CALLBACK_URL || 'https://chatgpt.com' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Run tests
+        run: pytest -q
+      - uses: aws-actions/setup-sam@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::379549361690:role/planelocket-symptom-github-deploy
+          aws-region: us-east-2
+      - name: Validate
+        run: sam validate --lint
+      - name: Build
+        run: sam build
+      - name: Deploy
+        run: >
+          sam deploy
+          --stack-name planelocket-symptom-relay
+          --region us-east-2
+          --resolve-s3
+          --capabilities CAPABILITY_IAM
+          --parameter-overrides OAuthCallbackUrl="$OAUTH_CALLBACK_URL"
+          --no-confirm-changeset
+          --no-fail-on-empty-changeset
+      - name: Show stack outputs
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name planelocket-symptom-relay \
+            --region us-east-2 \
+            --query 'Stacks[0].Outputs' \
+            --output table
+
