@@ -29,34 +29,6 @@ jobs:
         run: pytest -q
       - uses: aws-actions/setup-sam@v2
 
-      - name: Inspect GitHub OIDC claims
-        shell: bash
-        run: |
-          python - <<'PY'
-          import base64
-          import json
-          import os
-          import urllib.request
-
-          request = urllib.request.Request(
-              os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + "&audience=sts.amazonaws.com",
-              headers={
-                  "Authorization": "Bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]
-              },
-          )
-          with urllib.request.urlopen(request, timeout=15) as response:
-              token = json.load(response)["value"]
-
-          encoded_payload = token.split(".")[1]
-          encoded_payload += "=" * (-len(encoded_payload) % 4)
-          claims = json.loads(base64.urlsafe_b64decode(encoded_payload))
-          safe_claims = {
-              key: claims.get(key)
-              for key in ("iss", "aud", "sub", "repository", "ref", "environment")
-          }
-          print(json.dumps(safe_claims, indent=2, sort_keys=True))
-          PY
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
