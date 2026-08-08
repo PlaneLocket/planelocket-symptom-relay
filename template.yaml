@@ -1,0 +1,150 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: PlaneLocket Symptom Relay - private two-user symptom log with OAuth-protected MCP tools
+
+Parameters:
+  OAuthCallbackUrl:
+    Type: String
+    Default: https://chatgpt.com
+    Description: Exact callback URL displayed by the ChatGPT custom app editor.
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Architectures: [arm64]
+    Timeout: 20
+    MemorySize: 256
+    Tracing: Active
+
+Resources:
+  SymptomTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: planelocket-symptom-events
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  SymptomUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: planelocket-symptom-mcp
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      MfaConfiguration: OPTIONAL
+      EnabledMfas: [SOFTWARE_TOKEN_MFA]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          TemporaryPasswordValidityDays: 7
+
+  SymptomResourceServer:
+    Type: AWS::Cognito::UserPoolResourceServer
+    Properties:
+      UserPoolId: !Ref SymptomUserPool
+      Identifier: planelocket-symptoms
+      Name: PlaneLocket Symptom Log
+      Scopes:
+        - ScopeName: read
+          ScopeDescription: Read the signed-in user's symptom records
+        - ScopeName: write
+          ScopeDescription: Create, update, and delete the signed-in user's symptom records
+
+  SymptomOAuthClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: SymptomResourceServer
+    Properties:
+      UserPoolId: !Ref SymptomUserPool
+      ClientName: chatgpt-planelocket-symptoms
+      GenerateSecret: true
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - planelocket-symptoms/read
+        - planelocket-symptoms/write
+      CallbackURLs: [!Ref OAuthCallbackUrl]
+      SupportedIdentityProviders: [COGNITO]
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  SymptomUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub planelocket-symptoms-${AWS::AccountId}
+      UserPoolId: !Ref SymptomUserPool
+      ManagedLoginVersion: 1
+
+  SymptomRelayFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: planelocket-symptom-relay
+      CodeUri: src/symptom_relay/
+      Handler: app.lambda_handler
+      Description: OAuth-protected REST and MCP symptom tracker.
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref SymptomTable
+          COGNITO_ISSUER: !Sub https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${SymptomUserPool}
+          COGNITO_JWKS_URL: !Sub https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${SymptomUserPool}/.well-known/jwks.json
+          COGNITO_CLIENT_ID: !Ref SymptomOAuthClient
+          COGNITO_AUTHORIZATION_ENDPOINT: !Sub https://planelocket-symptoms-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize
+          COGNITO_TOKEN_ENDPOINT: !Sub https://planelocket-symptoms-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/oauth2/token
+          ACTION_READ_SCOPE: planelocket-symptoms/read
+          ACTION_WRITE_SCOPE: planelocket-symptoms/write
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SymptomTable
+      Events:
+        OpenApi: {Type: HttpApi, Properties: {Path: /openapi.json, Method: GET}}
+        Mcp: {Type: HttpApi, Properties: {Path: /mcp, Method: POST}}
+        McpMetadata: {Type: HttpApi, Properties: {Path: /.well-known/oauth-protected-resource/mcp, Method: GET}}
+        Health: {Type: HttpApi, Properties: {Path: /health, Method: GET}}
+        EntriesGet: {Type: HttpApi, Properties: {Path: /entries, Method: GET}}
+        EntriesPost: {Type: HttpApi, Properties: {Path: /entries, Method: POST}}
+        EntryPut: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}', Method: PUT}}
+        EntryDelete: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}', Method: DELETE}}
+
+Outputs:
+  RelayApiUrl:
+    Value: !Sub https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+  McpUrl:
+    Value: !Sub https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/mcp
+  ActionOpenApiUrl:
+    Value: !Sub https://${ServerlessHttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/openapi.json
+  OAuthAuthorizationEndpoint:
+    Value: !Sub https://planelocket-symptoms-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize
+  OAuthTokenEndpoint:
+    Value: !Sub https://planelocket-symptoms-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/oauth2/token
+  OAuthClientId: {Value: !Ref SymptomOAuthClient}
+  OAuthScopes: {Value: 'openid email planelocket-symptoms/read planelocket-symptoms/write'}
+  CognitoUserPoolId: {Value: !Ref SymptomUserPool}
+  SymptomTableName: {Value: !Ref SymptomTable}
+  FunctionArn: {Value: !GetAtt SymptomRelayFunction.Arn}
+
