@@ -276,12 +276,19 @@ def mcp_challenge(event, scopes=True):
 
 
 def mcp_tools():
-    return [
-        {"name": "log_symptoms", "description": "Log symptoms and related context for the signed-in person. Preserve the user's wording in original_text when available.", "inputSchema": entry_schema(), "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
-        {"name": "list_symptom_entries", "description": "List only the signed-in person's recent symptom entries.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}, "since": {"type": "string", "format": "date-time"}, "until": {"type": "string", "format": "date-time"}}, "additionalProperties": False}, "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
-        {"name": "update_symptom_entry", "description": "Correct fields on one of the signed-in person's symptom entries.", "inputSchema": {"type": "object", "required": ["entry_id", "changes"], "properties": {"entry_id": {"type": "string"}, "changes": entry_schema(False)}, "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
-        {"name": "delete_symptom_entry", "description": "Permanently delete one of the signed-in person's symptom entries. Use only when explicitly requested.", "inputSchema": {"type": "object", "required": ["entry_id"], "properties": {"entry_id": {"type": "string"}}, "additionalProperties": False}, "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False}},
+    read_security = [{"type": "oauth2", "scopes": [os.environ["ACTION_READ_SCOPE"]]}]
+    write_security = [{"type": "oauth2", "scopes": [os.environ["ACTION_WRITE_SCOPE"]]}]
+    tools = [
+        {"name": "log_symptoms", "description": "Log symptoms and related context for the signed-in person. Preserve the user's wording in original_text when available.", "inputSchema": entry_schema(), "securitySchemes": write_security, "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
+        {"name": "list_symptom_entries", "description": "List only the signed-in person's recent symptom entries.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}, "since": {"type": "string", "format": "date-time"}, "until": {"type": "string", "format": "date-time"}}, "additionalProperties": False}, "securitySchemes": read_security, "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
+        {"name": "update_symptom_entry", "description": "Correct fields on one of the signed-in person's symptom entries.", "inputSchema": {"type": "object", "required": ["entry_id", "changes"], "properties": {"entry_id": {"type": "string"}, "changes": entry_schema(False)}, "additionalProperties": False}, "securitySchemes": write_security, "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
+        {"name": "delete_symptom_entry", "description": "Permanently delete one of the signed-in person's symptom entries. Use only when explicitly requested.", "inputSchema": {"type": "object", "required": ["entry_id"], "properties": {"entry_id": {"type": "string"}}, "additionalProperties": False}, "securitySchemes": write_security, "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False}},
     ]
+    # Compatibility mirror for hosts that still read OpenAI auth metadata from
+    # _meta while adopting the top-level MCP securitySchemes field.
+    for tool in tools:
+        tool["_meta"] = {"securitySchemes": tool["securitySchemes"]}
+    return tools
 
 
 def mcp_result(request_id, payload):
@@ -324,7 +331,13 @@ def mcp_endpoint(event):
         return mcp_result(request_id, {"content": [{"type": "text", "text": json.dumps(payload, default=json_default)}], "structuredContent": payload, "isError": False})
     except RelayError as exc:
         if exc.status in (401, 403):
-            return response(exc.status, {"message": exc.message}, mcp_challenge(event))
+            challenge = mcp_challenge(event)["WWW-Authenticate"]
+            challenge += ', error="insufficient_scope", error_description="Authentication with the required symptom-log scope is required"'
+            return mcp_result(request_id, {
+                "content": [{"type": "text", "text": exc.message}],
+                "_meta": {"mcp/www_authenticate": [challenge]},
+                "isError": True,
+            })
         payload = {"message": exc.message, "status": exc.status}
         return mcp_result(request_id, {"content": [{"type": "text", "text": json.dumps(payload)}], "isError": True})
 
@@ -363,4 +376,3 @@ def lambda_handler(event: dict[str, Any], context: Any):
     except Exception:
         LOG.exception("Unhandled symptom relay failure")
         return response(500, {"message": "Internal relay error."})
-
