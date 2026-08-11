@@ -12,6 +12,7 @@ from urllib.parse import unquote
 
 import boto3
 import jwt
+from botocore.config import Config
 from boto3.dynamodb.conditions import Key
 from jwt import PyJWKClient
 
@@ -66,7 +67,13 @@ def table():
 def s3():
     global _s3
     if _s3 is None:
-        _s3 = boto3.client("s3")
+        region = os.environ.get("AWS_REGION", "us-east-2")
+        _s3 = boto3.client(
+            "s3",
+            region_name=region,
+            endpoint_url=f"https://s3.{region}.amazonaws.com",
+            config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+        )
     return _s3
 
 
@@ -290,7 +297,7 @@ def start_attachment_upload(claims, entry_id, filename, content_type, size_bytes
         raise RelayError(409, "This symptom entry already has 10 attachments.")
     clean, normalized_type, size = normalize_file(filename, content_type, size_bytes)
     attachment_id = str(uuid.uuid4())
-    object_key = f"users/{claims['sub']}/entries/{unquote(str(entry_id))}/{attachment_id}"
+    object_key = f"pending/{claims['sub']}/{attachment_id}"
     created_at = now_iso()
     item = {
         "PK": owner_key(claims), "SK": attachment_sk(entry_id, attachment_id),
@@ -301,7 +308,7 @@ def start_attachment_upload(claims, entry_id, filename, content_type, size_bytes
     table().put_item(Item=item, ConditionExpression="attribute_not_exists(PK) AND attribute_not_exists(SK)")
     upload_url = s3().generate_presigned_url(
         "put_object",
-        Params={"Bucket": os.environ["ATTACHMENT_BUCKET"], "Key": object_key, "ContentType": normalized_type, "Tagging": "status=pending"},
+        Params={"Bucket": os.environ["ATTACHMENT_BUCKET"], "Key": object_key, "ContentType": normalized_type},
         ExpiresIn=PRESIGNED_URL_SECONDS,
     )
     return {"entry_id": item["entry_id"], "attachment_id": attachment_id, "filename": clean, "content_type": normalized_type, "size_bytes": size, "upload_url": upload_url, "expires_in": PRESIGNED_URL_SECONDS}
@@ -334,9 +341,18 @@ def complete_attachment_upload(claims, entry_id, attachment_id):
         s3().delete_object(Bucket=bucket, Key=item["object_key"])
         table().delete_item(Key=key)
         raise RelayError(400, "The uploaded file did not match its declared type or size and was removed.")
-    item.update({"status": "ready", "verified_at": now_iso()})
+    permanent_key = f"users/{claims['sub']}/entries/{unquote(str(entry_id))}/{attachment_id}"
+    s3().copy_object(
+        Bucket=bucket,
+        Key=permanent_key,
+        CopySource={"Bucket": bucket, "Key": item["object_key"]},
+        ContentType=item["content_type"],
+        MetadataDirective="REPLACE",
+    )
+    pending_key = item["object_key"]
+    item.update({"object_key": permanent_key, "status": "ready", "verified_at": now_iso()})
     table().put_item(Item=item, ConditionExpression="attribute_exists(PK) AND attribute_exists(SK)")
-    s3().put_object_tagging(Bucket=bucket, Key=item["object_key"], Tagging={"TagSet": [{"Key": "status", "Value": "ready"}]})
+    s3().delete_object(Bucket=bucket, Key=pending_key)
     return {"attachment": public_attachment(item)}
 
 
