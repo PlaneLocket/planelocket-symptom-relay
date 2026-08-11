@@ -17,6 +17,53 @@ Globals:
     Tracing: Active
 
 Resources:
+  SymptomAttachmentBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub planelocket-symptom-attachments-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [PUT]
+            AllowedOrigins: ['*']
+            ExposedHeaders: [ETag]
+            MaxAge: 300
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteUnconfirmedUploads
+            Status: Enabled
+            TagFilters:
+              - Key: status
+                Value: pending
+            ExpirationInDays: 1
+
+  SymptomAttachmentBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SymptomAttachmentBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt SymptomAttachmentBucket.Arn
+              - !Sub ${SymptomAttachmentBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
   SymptomTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -118,9 +165,13 @@ Resources:
           COGNITO_TOKEN_ENDPOINT: !Sub https://planelocket-symptoms-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/oauth2/token
           ACTION_READ_SCOPE: planelocket-symptoms/read
           ACTION_WRITE_SCOPE: planelocket-symptoms/write
+          ATTACHMENT_BUCKET: !Ref SymptomAttachmentBucket
+          ATTACHMENT_BUCKET_ORIGIN: !Sub https://${SymptomAttachmentBucket}.s3.${AWS::Region}.${AWS::URLSuffix}
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref SymptomTable
+        - S3CrudPolicy:
+            BucketName: !Ref SymptomAttachmentBucket
       Events:
         OpenApi: {Type: HttpApi, Properties: {Path: /openapi.json, Method: GET}}
         Mcp: {Type: HttpApi, Properties: {Path: /mcp, Method: POST}}
@@ -146,5 +197,5 @@ Outputs:
   OAuthScopes: {Value: 'openid email planelocket-symptoms/read planelocket-symptoms/write'}
   CognitoUserPoolId: {Value: !Ref SymptomUserPool}
   SymptomTableName: {Value: !Ref SymptomTable}
+  SymptomAttachmentBucketName: {Value: !Ref SymptomAttachmentBucket}
   FunctionArn: {Value: !GetAtt SymptomRelayFunction.Arn}
-

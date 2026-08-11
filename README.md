@@ -16,6 +16,7 @@ Amazon Cognito User Pool
         | per-user access token (`sub` identifies the owner)
         v
 API Gateway -> Lambda REST/MCP adapter -> DynamoDB
+                                      `-> private S3 attachments
 ```
 
 Each DynamoDB partition is keyed by the authenticated Cognito `sub`. The API
@@ -28,6 +29,15 @@ partition.
 - `list_symptom_entries`
 - `update_symptom_entry`
 - `delete_symptom_entry`
+- `show_attachment_uploader`
+- `list_symptom_attachments`
+- `get_symptom_attachment`
+- `delete_symptom_attachment`
+
+The uploader accepts one JPEG, PNG, HEIC/HEIF, or PDF at a time, up to 20 MiB
+and 10 attachments per symptom entry. It uploads directly from the in-chat
+picker to a five-minute presigned S3 URL. `start_attachment_upload` and
+`complete_attachment_upload` are lower-level tools used by the picker.
 
 Deletion is marked destructive and should be used only on an explicit request.
 All write operations return the authoritative stored record or deleted record.
@@ -92,10 +102,14 @@ sam build
 ## Privacy and operational notes
 
 - DynamoDB encryption at rest is enabled.
+- The attachment bucket is private, blocks all public access, requires TLS, and
+  uses S3 server-side encryption. Download links expire after five minutes.
+- Upload completion checks the declared byte count, content type, and file
+  signature. Unconfirmed uploads are removed after one day.
+- Deleting a symptom entry also permanently deletes its attachments.
 - Point-in-time recovery is enabled. This may incur a small charge and is not
   required for basic operation; it is enabled because these records are hard to
   reconstruct.
 - Lambda logs metadata and exceptions, not request bodies or symptom content.
 - The application is a personal recordkeeping tool, not a diagnostic system.
 - AWS service eligibility alone does not make the deployment HIPAA compliant.
-

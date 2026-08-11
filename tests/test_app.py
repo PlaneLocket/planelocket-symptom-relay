@@ -31,6 +31,36 @@ class FakeTable:
         return {"Items": list(self.items.values())}
 
 
+class FakeBody:
+    def __init__(self, data):
+        self.data = data
+
+    def read(self):
+        return self.data
+
+
+class FakeS3:
+    def __init__(self):
+        self.objects = {}
+
+    def generate_presigned_url(self, operation, Params, ExpiresIn):
+        return f"https://bucket.example/{operation}/{Params['Key']}?expires={ExpiresIn}"
+
+    def head_object(self, Bucket, Key):
+        value = self.objects[Key]
+        return {"ContentLength": len(value["body"]), "ContentType": value["content_type"]}
+
+    def get_object(self, Bucket, Key, Range):
+        return {"Body": FakeBody(self.objects[Key]["body"][:32])}
+
+    def put_object_tagging(self, **kwargs):
+        return {}
+
+    def delete_object(self, Bucket, Key):
+        self.objects.pop(Key, None)
+        return {}
+
+
 @pytest.fixture(autouse=True)
 def environment(monkeypatch):
     monkeypatch.setenv("ACTION_READ_SCOPE", "planelocket-symptoms/read")
@@ -39,8 +69,13 @@ def environment(monkeypatch):
     monkeypatch.setenv("COGNITO_CLIENT_ID", "client")
     monkeypatch.setenv("COGNITO_AUTHORIZATION_ENDPOINT", "https://auth.example/authorize")
     monkeypatch.setenv("COGNITO_TOKEN_ENDPOINT", "https://auth.example/token")
+    monkeypatch.setenv("ATTACHMENT_BUCKET", "attachments")
+    monkeypatch.setenv("ATTACHMENT_BUCKET_ORIGIN", "https://attachments.s3.us-east-2.amazonaws.com")
     fake = FakeTable()
+    fake_s3 = FakeS3()
     monkeypatch.setattr(app, "table", lambda: fake)
+    monkeypatch.setattr(app, "s3", lambda: fake_s3)
+    fake.s3 = fake_s3
     return fake
 
 
@@ -85,7 +120,9 @@ def test_mcp_tool_catalog_is_available_without_oauth():
     payload = json.loads(result["body"])
     assert result["statusCode"] == 200
     assert {tool["name"] for tool in payload["result"]["tools"]} == {
-        "log_symptoms", "list_symptom_entries", "update_symptom_entry", "delete_symptom_entry"
+        "log_symptoms", "list_symptom_entries", "update_symptom_entry", "delete_symptom_entry",
+        "show_attachment_uploader", "start_attachment_upload", "complete_attachment_upload",
+        "list_symptom_attachments", "get_symptom_attachment", "delete_symptom_attachment",
     }
 
 
@@ -94,10 +131,32 @@ def test_mcp_tools_declare_custom_oauth_scopes():
     assert tools["list_symptom_entries"]["securitySchemes"] == [
         {"type": "oauth2", "scopes": ["planelocket-symptoms/read"]}
     ]
-    for name in ("log_symptoms", "update_symptom_entry", "delete_symptom_entry"):
+    for name in ("log_symptoms", "update_symptom_entry", "delete_symptom_entry", "show_attachment_uploader",
+                 "start_attachment_upload", "complete_attachment_upload", "delete_symptom_attachment"):
         expected = [{"type": "oauth2", "scopes": ["planelocket-symptoms/write"]}]
         assert tools[name]["securitySchemes"] == expected
         assert tools[name]["_meta"]["securitySchemes"] == expected
+    for name in ("list_symptom_attachments", "get_symptom_attachment"):
+        assert tools[name]["securitySchemes"] == [{"type": "oauth2", "scopes": ["planelocket-symptoms/read"]}]
+
+
+def test_attachment_upload_is_verified_and_partitioned(environment):
+    entry = app.create_entry({"sub": "person-a"}, {"symptoms": [{"name": "swelling"}]})
+    started = app.start_attachment_upload({"sub": "person-a"}, entry["entry_id"], "ankle.png", "image/png", 12)
+    item = next(value for value in environment.items.values() if value.get("attachment_id") == started["attachment_id"])
+    environment.s3.objects[item["object_key"]] = {"body": b"\x89PNG\r\n\x1a\nDATA", "content_type": "image/png"}
+    completed = app.complete_attachment_upload({"sub": "person-a"}, entry["entry_id"], started["attachment_id"])
+    assert completed["attachment"]["status"] == "ready"
+    assert "object_key" not in completed["attachment"]
+    with pytest.raises(app.RelayError) as exc:
+        app.list_attachments({"sub": "person-b"}, entry["entry_id"])
+    assert exc.value.status == 404
+
+
+def test_attachment_resource_declares_exact_s3_origin():
+    resource = app.attachment_resource()["contents"][0]
+    assert resource["mimeType"] == "text/html;profile=mcp-app"
+    assert resource["_meta"]["ui"]["csp"]["connectDomains"] == ["https://attachments.s3.us-east-2.amazonaws.com"]
 
 
 def test_mcp_tool_call_returns_authentication_metadata_without_token():
