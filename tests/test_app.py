@@ -53,7 +53,8 @@ class FakeS3:
     def get_object(self, Bucket, Key, Range):
         return {"Body": FakeBody(self.objects[Key]["body"][:32])}
 
-    def put_object_tagging(self, **kwargs):
+    def copy_object(self, Bucket, Key, CopySource, **kwargs):
+        self.objects[Key] = dict(self.objects[CopySource["Key"]])
         return {}
 
     def delete_object(self, Bucket, Key):
