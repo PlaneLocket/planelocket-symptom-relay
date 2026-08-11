@@ -58,7 +58,7 @@
         setStatus('Uploading…');
         const sent = await fetch(upload.upload_url, {
           method: 'PUT', body: file,
-          headers: {'Content-Type': upload.content_type, 'x-amz-tagging': 'status=pending'}
+          headers: {'Content-Type': upload.content_type}
         });
         if (!sent.ok) throw new Error(`Upload failed (${sent.status}).`);
         setStatus('Verifying…');
