@@ -41,9 +41,7 @@ Resources:
         Rules:
           - Id: DeleteUnconfirmedUploads
             Status: Enabled
-            TagFilters:
-              - Key: status
-                Value: pending
+            Prefix: pending/
             ExpirationInDays: 1
 
   SymptomAttachmentBucketPolicy:
