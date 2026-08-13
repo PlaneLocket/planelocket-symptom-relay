@@ -51,6 +51,17 @@ def json_default(value):
     raise TypeError(f"Cannot serialize {type(value).__name__}")
 
 
+def dynamodb_value(value):
+    """Convert JSON-compatible values to types accepted by DynamoDB."""
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {key: dynamodb_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [dynamodb_value(item) for item in value]
+    return value
+
+
 def response(status: int, body: Any, headers: dict[str, str] | None = None):
     result_headers = {"content-type": "application/json; charset=utf-8", "cache-control": "no-store"}
     result_headers.update(headers or {})
@@ -387,7 +398,7 @@ def create_entry(claims, body):
     created_at = now_iso()
     item = {"PK": owner_key(claims), "SK": "ENTRY#" + entry_id, "entry_id": entry_id, "occurred_at": occurred_at, "created_at": created_at, "updated_at": created_at, **body}
     item["occurred_at"] = occurred_at
-    table().put_item(Item=item, ConditionExpression="attribute_not_exists(PK) AND attribute_not_exists(SK)")
+    table().put_item(Item=dynamodb_value(item), ConditionExpression="attribute_not_exists(PK) AND attribute_not_exists(SK)")
     return public_item(item)
 
 
@@ -418,7 +429,7 @@ def update_entry(claims, entry_id, patch):
         raise RelayError(404, "Entry not found.")
     merged = {**current, **patch, "updated_at": now_iso()}
     validate_entry({k: merged[k] for k in ALLOWED_FIELDS if k in merged})
-    table().put_item(Item=merged, ConditionExpression="attribute_exists(PK) AND attribute_exists(SK)")
+    table().put_item(Item=dynamodb_value(merged), ConditionExpression="attribute_exists(PK) AND attribute_exists(SK)")
     return public_item(merged)
 
 
