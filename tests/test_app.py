@@ -122,6 +122,16 @@ def test_decimal_sleep_hours_can_be_updated(environment):
     assert not isinstance(stored["sleep_hours"], float)
 
 
+def test_entry_with_stored_decimal_sleep_hours_can_receive_unrelated_update(environment):
+    created = app.create_entry(
+        {"sub": "person-a"},
+        {"symptoms": [{"name": "Garmin wellness"}], "sleep_hours": 7.37},
+    )
+    updated = app.update_entry({"sub": "person-a"}, created["entry_id"], {"notes": "Corrected intensity minutes."})
+    assert updated["sleep_hours"] == Decimal("7.37")
+    assert updated["notes"] == "Corrected intensity minutes."
+
+
 def test_update_cannot_cross_user_partition(environment):
     created = app.create_entry({"sub": "person-a"}, {"symptoms": [{"name": "pain", "severity": 3}]})
     with pytest.raises(app.RelayError) as exc:
