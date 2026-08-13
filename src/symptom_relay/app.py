@@ -218,11 +218,11 @@ def validate_entry(body, partial=False):
                 raise RelayError(400, "Each symptom requires a name.")
             if set(symptom) - {"name", "severity", "location", "notes"}:
                 raise RelayError(400, "A symptom contains unsupported fields.")
-            if "severity" in symptom and not isinstance(symptom["severity"], (int, float)):
+            if "severity" in symptom and (isinstance(symptom["severity"], bool) or not isinstance(symptom["severity"], (int, float, Decimal))):
                 raise RelayError(400, "Symptom severity must be numeric from 0 through 10.")
             if "severity" in symptom and not 0 <= symptom["severity"] <= 10:
                 raise RelayError(400, "Symptom severity must be from 0 through 10.")
-    if "sleep_hours" in body and (not isinstance(body["sleep_hours"], (int, float)) or not 0 <= body["sleep_hours"] <= 24):
+    if "sleep_hours" in body and (isinstance(body["sleep_hours"], bool) or not isinstance(body["sleep_hours"], (int, float, Decimal)) or not 0 <= body["sleep_hours"] <= 24):
         raise RelayError(400, "sleep_hours must be numeric from 0 through 24.")
     for field, limit in (("medications", 50), ("tags", 30)):
         if field in body and (not isinstance(body[field], list) or len(body[field]) > limit or not all(isinstance(v, str) for v in body[field])):
