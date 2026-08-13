@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,26 @@ def test_create_partitions_entries_by_cognito_subject(environment):
 def test_invalid_severity_is_rejected():
     with pytest.raises(app.RelayError, match="0 through 10"):
         app.create_entry({"sub": "person-a"}, {"symptoms": [{"name": "pain", "severity": 11}]})
+
+
+def test_decimal_sleep_hours_are_stored_as_dynamodb_decimal(environment):
+    created = app.create_entry(
+        {"sub": "person-a"},
+        {"symptoms": [{"name": "Garmin wellness"}], "sleep_hours": 7.37},
+    )
+    stored = next(iter(environment.items.values()))
+    assert created["sleep_hours"] == 7.37
+    assert stored["sleep_hours"] == Decimal("7.37")
+    assert not isinstance(stored["sleep_hours"], float)
+
+
+def test_decimal_sleep_hours_can_be_updated(environment):
+    created = app.create_entry({"sub": "person-a"}, {"symptoms": [{"name": "Garmin wellness"}]})
+    updated = app.update_entry({"sub": "person-a"}, created["entry_id"], {"sleep_hours": 6.45})
+    stored = environment.items[("USER#person-a", "ENTRY#" + created["entry_id"])]
+    assert updated["sleep_hours"] == 6.45
+    assert stored["sleep_hours"] == Decimal("6.45")
+    assert not isinstance(stored["sleep_hours"], float)
 
 
 def test_update_cannot_cross_user_partition(environment):
