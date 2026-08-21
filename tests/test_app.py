@@ -27,9 +27,18 @@ class FakeTable:
         return {"Attributes": item} if item else {}
 
     def query(self, **kwargs):
-        # The production query applies the PK in DynamoDB. Tests verify the
-        # owner partition by inspecting stored keys and use a filtered view.
-        return {"Items": list(self.items.values())}
+        items = [dict(value) for value in self.items.values() if value["SK"].startswith("ENTRY#")]
+        items.sort(key=lambda value: value["SK"], reverse=not kwargs.get("ScanIndexForward", True))
+        start = kwargs.get("ExclusiveStartKey")
+        if start:
+            items = items[items.index(next(value for value in items if value["PK"] == start["PK"] and value["SK"] == start["SK"])) + 1:]
+        limit = kwargs.get("Limit", len(items))
+        page = items[:limit]
+        result = {"Items": page}
+        if len(items) > limit:
+            result["LastEvaluatedKey"] = {"PK": page[-1]["PK"], "SK": page[-1]["SK"]}
+        self.last_query = kwargs
+        return result
 
 
 class FakeBody:
@@ -73,6 +82,8 @@ def environment(monkeypatch):
     monkeypatch.setenv("COGNITO_TOKEN_ENDPOINT", "https://auth.example/token")
     monkeypatch.setenv("ATTACHMENT_BUCKET", "attachments")
     monkeypatch.setenv("ATTACHMENT_BUCKET_ORIGIN", "https://attachments.s3.us-east-2.amazonaws.com")
+    monkeypatch.setenv("CURSOR_SECRET", "unit-test-only-secret")
+    app._cursor_key = None
     fake = FakeTable()
     fake_s3 = FakeS3()
     monkeypatch.setattr(app, "table", lambda: fake)
@@ -219,3 +230,55 @@ def test_openapi_arrays_define_items():
     for value in properties.values():
         if value.get("type") == "array":
             assert "items" in value
+
+
+def test_timestamps_are_canonicalized_to_utc(environment):
+    created = app.create_entry({"sub": "person-a"}, {
+        "occurred_at": "2026-08-21T18:00:00-05:00",
+        "symptoms": [{"name": "PVCs"}],
+    })
+    assert created["occurred_at"] == "2026-08-21T23:00:00.000000Z"
+    assert environment.items[("USER#person-a", "ENTRY#" + created["entry_id"])]["SK"].startswith("ENTRY#2026-08-21T23:00:00.000000Z~")
+
+
+def test_list_entries_paginates_without_duplicates_or_attachments(environment):
+    claims = {"sub": "person-a"}
+    for second in range(12):
+        app.create_entry(claims, {"occurred_at": f"2026-08-21T12:00:{second:02d}Z", "symptoms": [{"name": "pain"}]})
+    entry = next(value for value in environment.items.values() if value["SK"].startswith("ENTRY#"))
+    environment.put_item(Item={"PK": entry["PK"], "SK": "ATTACHMENT#ignored", "attachment_id": "ignored"})
+    seen = []
+    cursor = None
+    while True:
+        page = app.list_entries(claims, limit=5, cursor=cursor)
+        seen.extend(item["entry_id"] for item in page["entries"])
+        cursor = page["next_cursor"]
+        if not cursor:
+            break
+    assert len(seen) == 12
+    assert len(set(seen)) == 12
+
+
+def test_cursor_is_bound_to_user_and_filters(environment):
+    claims = {"sub": "person-a"}
+    for second in range(3):
+        app.create_entry(claims, {"occurred_at": f"2026-08-21T12:00:{second:02d}Z", "symptoms": [{"name": "pain"}]})
+    cursor = app.list_entries(claims, limit=1)["next_cursor"]
+    with pytest.raises(app.RelayError, match="Invalid or expired"):
+        app.list_entries({"sub": "person-b"}, limit=1, cursor=cursor)
+    with pytest.raises(app.RelayError, match="Invalid or expired"):
+        app.list_entries(claims, limit=1, since="2026-08-21T00:00:00Z", cursor=cursor)
+    with pytest.raises(app.RelayError, match="Invalid or expired"):
+        app.list_entries(claims, limit=1, cursor=cursor[:-1] + ("A" if cursor[-1] != "A" else "B"))
+
+
+def test_date_bounds_are_applied_in_dynamodb_key_condition(environment):
+    app.list_entries({"sub": "person-a"}, since="2026-08-01T00:00:00-05:00", until="2026-08-31T23:59:59-05:00")
+    expression = environment.last_query["KeyConditionExpression"]
+    assert expression._values[1].__class__.__name__ == "Between"
+    assert "occurred_at" not in environment.last_query
+
+
+def test_since_after_until_is_rejected():
+    with pytest.raises(app.RelayError, match="since must not be later"):
+        app.list_entries({"sub": "person-a"}, since="2026-09-01T00:00:00Z", until="2026-08-01T00:00:00Z")
