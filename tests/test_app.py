@@ -282,3 +282,25 @@ def test_date_bounds_are_applied_in_dynamodb_key_condition(environment):
 def test_since_after_until_is_rejected():
     with pytest.raises(app.RelayError, match="since must not be later"):
         app.list_entries({"sub": "person-a"}, since="2026-09-01T00:00:00Z", until="2026-08-01T00:00:00Z")
+
+
+def test_reporting_loader_traverses_more_than_100_entries(environment):
+    claims = {"sub": "person-a"}
+    for index in range(105):
+        minute, second = divmod(index, 60)
+        app.create_entry(claims, {"occurred_at": f"2026-08-21T12:{minute:02d}:{second:02d}Z", "symptoms": [{"name": "pain"}]})
+    loaded = app.report_entries(claims, "2026-08-21T00:00:00Z", "2026-08-22T00:00:00Z")
+    assert len(loaded) == 105
+
+
+def test_report_summary_route_is_oauth_protected_and_no_store(environment, monkeypatch):
+    claims = {"sub": "person-a"}
+    app.create_entry(claims, {"occurred_at": "2026-08-21T12:00:00Z", "symptoms": [{"name": "PVCs", "severity": 5}]})
+    monkeypatch.setattr(app, "authenticate", lambda event, scope: claims)
+    event = api_event("GET", "/reports/summary")
+    event["queryStringParameters"] = {"since": "2026-08-21T00:00:00Z", "until": "2026-08-22T00:00:00Z"}
+    result = app.lambda_handler(event, None)
+    payload = json.loads(result["body"])
+    assert result["statusCode"] == 200
+    assert result["headers"]["cache-control"] == "no-store"
+    assert payload["occurrence_count"] == 1

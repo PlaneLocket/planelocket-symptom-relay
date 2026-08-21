@@ -6,7 +6,7 @@ import os
 import re
 import uuid
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 from urllib.parse import unquote
@@ -17,10 +17,11 @@ from botocore.config import Config
 from boto3.dynamodb.conditions import Key
 from jwt import PyJWKClient
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import reporting
 
 LOG = logging.getLogger()
 LOG.setLevel(logging.INFO)
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 MAX_BODY_BYTES = 64 * 1024
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_ATTACHMENTS_PER_ENTRY = 10
@@ -69,6 +70,13 @@ def response(status: int, body: Any, headers: dict[str, str] | None = None):
     result_headers = {"content-type": "application/json; charset=utf-8", "cache-control": "no-store"}
     result_headers.update(headers or {})
     return {"statusCode": status, "headers": result_headers, "body": json.dumps(body, default=json_default)}
+
+
+def text_response(status, body, content_type, filename=None):
+    headers = {"content-type": content_type, "cache-control": "no-store"}
+    if filename:
+        headers["content-disposition"] = f'attachment; filename="{filename}"'
+    return {"statusCode": status, "headers": headers, "body": body}
 
 
 def table():
@@ -480,6 +488,34 @@ def list_entries(claims, limit=50, since=None, until=None, cursor=None):
     return {"entries": items, "count": len(items), "next_cursor": next_cursor, "has_more": bool(last_key)}
 
 
+def report_period(query):
+    until = validate_timestamp(query.get("until"), "until") if query.get("until") else now_iso()
+    since = validate_timestamp(query.get("since"), "since") if query.get("since") else canonical_timestamp(datetime.fromisoformat(until.replace("Z", "+00:00")) - timedelta(days=30))
+    if since > until:
+        raise RelayError(400, "since must not be later than until.")
+    if datetime.fromisoformat(until.replace("Z", "+00:00")) - datetime.fromisoformat(since.replace("Z", "+00:00")) > timedelta(days=366):
+        raise RelayError(400, "Reporting periods may not exceed 366 days.")
+    return since, until
+
+
+def report_entries(claims, since, until):
+    entries, cursor = [], None
+    while True:
+        page = list_entries(claims, 100, since, until, cursor)
+        entries.extend(page["entries"])
+        cursor = page["next_cursor"]
+        if not cursor:
+            return entries
+
+
+def report_data(claims, query):
+    since, until = report_period(query)
+    entries = report_entries(claims, since, until)
+    rows = reporting.normalize_entries(entries)
+    rows = reporting.filter_rows(rows, query.get("symptom"), query.get("group"))
+    return since, until, entries, rows
+
+
 def update_entry(claims, entry_id, patch):
     validate_entry(patch, partial=True)
     key = {"PK": owner_key(claims), "SK": entry_sk(entry_id)}
@@ -625,7 +661,21 @@ def openapi_document(event):
     base = public_base_url(event)
     read_scope, write_scope = os.environ["ACTION_READ_SCOPE"], os.environ["ACTION_WRITE_SCOPE"]
     auth = {"type": "oauth2", "flows": {"authorizationCode": {"authorizationUrl": os.environ["COGNITO_AUTHORIZATION_ENDPOINT"], "tokenUrl": os.environ["COGNITO_TOKEN_ENDPOINT"], "scopes": {read_scope: "Read personal symptom entries", write_scope: "Write personal symptom entries"}}}}
-    return {"openapi": "3.1.0", "info": {"title": "PlaneLocket Symptom Log", "version": VERSION}, "servers": [{"url": base}], "components": {"securitySchemes": {"cognitoOAuth": auth}, "schemas": {"Entry": entry_schema()}}, "paths": {"/entries": {"get": {"operationId": "listSymptomEntries", "security": [{"cognitoOAuth": [read_scope]}], "responses": {"200": {"description": "Personal symptom entries"}}}, "post": {"operationId": "logSymptoms", "security": [{"cognitoOAuth": [write_scope]}], "requestBody": {"required": True, "content": {"application/json": {"schema": entry_schema()}}}, "responses": {"201": {"description": "Entry created"}}}}}}
+    read_operation = lambda operation_id, description: {"operationId": operation_id, "security": [{"cognitoOAuth": [read_scope]}], "responses": {"200": {"description": description}}}
+    paths = {
+        "/entries": {
+            "get": read_operation("listSymptomEntries", "Personal symptom entries"),
+            "post": {"operationId": "logSymptoms", "security": [{"cognitoOAuth": [write_scope]}], "requestBody": {"required": True, "content": {"application/json": {"schema": entry_schema()}}}, "responses": {"201": {"description": "Entry created"}}},
+        },
+        "/reports/summary": {"get": read_operation("getSymptomSummary", "Symptom summary and coverage")},
+        "/reports/timeline": {"get": read_operation("getSymptomTimeline", "Daily symptom series")},
+        "/reports/symptoms": {"get": read_operation("getSymptomOccurrences", "Normalized symptom occurrences")},
+        "/reports/correlations": {"get": read_operation("getSymptomAssociations", "Conservative association analysis")},
+        "/reports/export": {"get": read_operation("exportSymptomOccurrences", "CSV symptom export")},
+        "/entries/{entry_id}/attachments": {"get": read_operation("listEntryAttachments", "Private attachment index")},
+        "/entries/{entry_id}/attachments/{attachment_id}": {"get": read_operation("getEntryAttachment", "Short-lived private attachment download")},
+    }
+    return {"openapi": "3.1.0", "info": {"title": "PlaneLocket Symptom Log", "version": VERSION}, "servers": [{"url": base}], "components": {"securitySchemes": {"cognitoOAuth": auth}, "schemas": {"Entry": entry_schema()}}, "paths": paths}
 
 
 def lambda_handler(event: dict[str, Any], context: Any):
@@ -645,6 +695,33 @@ def lambda_handler(event: dict[str, Any], context: Any):
         if path == "/entries" and method == "GET":
             query = event.get("queryStringParameters") or {}
             return response(200, list_entries(authenticate(event, os.environ["ACTION_READ_SCOPE"]), query.get("limit", 50), query.get("since"), query.get("until"), query.get("cursor")))
+        if method == "GET" and path.startswith("/reports/"):
+            claims = authenticate(event, os.environ["ACTION_READ_SCOPE"])
+            query = event.get("queryStringParameters") or {}
+            since, until, entries, rows = report_data(claims, query)
+            if path == "/reports/summary":
+                return response(200, reporting.summary(entries, rows, since, until))
+            if path == "/reports/timeline":
+                return response(200, reporting.timeline(entries, rows, since, until))
+            if path == "/reports/symptoms":
+                return response(200, {"period": {"since": since, "until": until, "timezone": reporting.REPORTING_TIMEZONE}, "occurrences": rows, "count": len(rows), "coverage": reporting.coverage(entries, since, until)})
+            if path == "/reports/correlations":
+                factor = query.get("factor", "sleep_hours")
+                outcome = query.get("outcome") or query.get("symptom")
+                if factor != "sleep_hours" or not outcome:
+                    raise RelayError(400, "Initial association analysis requires outcome and factor=sleep_hours.")
+                return response(200, {"analysis": reporting.sleep_association(entries, rows, outcome)})
+            if path == "/reports/export":
+                if query.get("format", "csv") != "csv" or query.get("dataset", "occurrences") != "occurrences":
+                    raise RelayError(400, "Initial exports support dataset=occurrences and format=csv.")
+                return text_response(200, reporting.occurrences_csv(rows), "text/csv; charset=utf-8", "symptom-occurrences.csv")
+            return response(404, {"message": "Report route not found."})
+        if method == "GET" and re.fullmatch(r"/entries/[^/]+/attachments", path):
+            entry_id = path.split("/", 3)[2]
+            return response(200, list_attachments(authenticate(event, os.environ["ACTION_READ_SCOPE"]), entry_id))
+        if method == "GET" and re.fullmatch(r"/entries/[^/]+/attachments/[0-9a-f-]{36}", path):
+            parts = path.split("/")
+            return response(200, get_attachment_download(authenticate(event, os.environ["ACTION_READ_SCOPE"]), parts[2], parts[4]))
         if path.startswith("/entries/") and method == "PUT":
             return response(200, update_entry(authenticate(event, os.environ["ACTION_WRITE_SCOPE"]), path.split("/", 2)[2], parse_body(event)))
         if path.startswith("/entries/") and method == "DELETE":
