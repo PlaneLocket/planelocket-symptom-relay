@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -15,10 +16,11 @@ import jwt
 from botocore.config import Config
 from boto3.dynamodb.conditions import Key
 from jwt import PyJWKClient
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 LOG = logging.getLogger()
 LOG.setLevel(logging.INFO)
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 MAX_BODY_BYTES = 64 * 1024
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_ATTACHMENTS_PER_ENTRY = 10
@@ -35,6 +37,7 @@ CONTENT_TYPES = {
 _table = None
 _jwks = None
 _s3 = None
+_cursor_key = None
 
 
 class RelayError(Exception):
@@ -148,7 +151,16 @@ def authenticate(event, required_scope):
 
 
 def now_iso():
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return canonical_timestamp(datetime.now(timezone.utc))
+
+
+def canonical_timestamp(value):
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise RelayError(400, "Timestamp must be a valid ISO 8601 value.") from exc
+    return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def validate_timestamp(value, field="occurred_at"):
@@ -158,7 +170,46 @@ def validate_timestamp(value, field="occurred_at"):
         datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
         raise RelayError(400, f"{field} must be a valid timestamp.") from exc
-    return value
+    return canonical_timestamp(value)
+
+
+def cursor_key():
+    global _cursor_key
+    if _cursor_key is None:
+        secret = os.environ.get("CURSOR_SECRET", "")
+        if not secret:
+            raise RelayError(500, "Pagination cursor encryption is not configured.")
+        _cursor_key = hashlib.sha256(secret.encode()).digest()
+    return _cursor_key
+
+
+def cursor_context(claims, since, until, direction):
+    raw = json.dumps({"sub": claims["sub"], "since": since, "until": until, "direction": direction}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).digest()
+
+
+def encode_cursor(claims, last_key, since, until, direction):
+    payload = json.dumps({"v": 1, "exp": int(datetime.now(timezone.utc).timestamp()) + 3600, "key": last_key}, separators=(",", ":")).encode()
+    nonce = os.urandom(12)
+    encrypted = AESGCM(cursor_key()).encrypt(nonce, payload, cursor_context(claims, since, until, direction))
+    return base64.urlsafe_b64encode(nonce + encrypted).decode().rstrip("=")
+
+
+def decode_cursor(claims, token, since, until, direction):
+    try:
+        padded = str(token) + "=" * (-len(str(token)) % 4)
+        raw = base64.urlsafe_b64decode(padded)
+        payload = json.loads(AESGCM(cursor_key()).decrypt(raw[:12], raw[12:], cursor_context(claims, since, until, direction)))
+        if payload.get("v") != 1 or int(payload.get("exp", 0)) < int(datetime.now(timezone.utc).timestamp()):
+            raise ValueError("expired")
+        key = payload["key"]
+        if key.get("PK") != owner_key(claims) or not str(key.get("SK", "")).startswith("ENTRY#"):
+            raise ValueError("owner")
+        return key
+    except RelayError:
+        raise
+    except Exception as exc:
+        raise RelayError(400, "Invalid or expired pagination cursor.") from exc
 
 
 def symptom_schema(required=False):
@@ -391,8 +442,7 @@ def delete_attachment(claims, entry_id, attachment_id):
 
 def create_entry(claims, body):
     validate_entry(body)
-    occurred_at = body.get("occurred_at") or now_iso()
-    validate_timestamp(occurred_at)
+    occurred_at = validate_timestamp(body.get("occurred_at"), "occurred_at") if body.get("occurred_at") else now_iso()
     unique_id = str(uuid.uuid4())
     entry_id = encode_entry_id(occurred_at, unique_id)
     created_at = now_iso()
@@ -402,23 +452,32 @@ def create_entry(claims, body):
     return public_item(item)
 
 
-def list_entries(claims, limit=50, since=None, until=None):
+def list_entries(claims, limit=50, since=None, until=None, cursor=None):
     try:
         limit = max(1, min(int(limit), 100))
     except (TypeError, ValueError):
         raise RelayError(400, "limit must be an integer from 1 through 100.")
-    if since:
-        validate_timestamp(since, "since")
-    if until:
-        validate_timestamp(until, "until")
-    condition = Key("PK").eq(owner_key(claims)) & Key("SK").begins_with("ENTRY#")
-    result = table().query(KeyConditionExpression=condition, Limit=limit, ScanIndexForward=False)
+    since = validate_timestamp(since, "since") if since else None
+    until = validate_timestamp(until, "until") if until else None
+    if since and until and since > until:
+        raise RelayError(400, "since must not be later than until.")
+    sk = Key("SK")
+    if since and until:
+        sk_condition = sk.between("ENTRY#" + since, "ENTRY#" + until + "~\uffff")
+    elif since:
+        sk_condition = sk.gte("ENTRY#" + since)
+    elif until:
+        sk_condition = sk.lte("ENTRY#" + until + "~\uffff")
+    else:
+        sk_condition = sk.begins_with("ENTRY#")
+    query = {"KeyConditionExpression": Key("PK").eq(owner_key(claims)) & sk_condition, "Limit": limit, "ScanIndexForward": False}
+    if cursor:
+        query["ExclusiveStartKey"] = decode_cursor(claims, cursor, since, until, "desc")
+    result = table().query(**query)
     items = [public_item(item) for item in result.get("Items", [])]
-    if since:
-        items = [item for item in items if item["occurred_at"] >= since]
-    if until:
-        items = [item for item in items if item["occurred_at"] <= until]
-    return {"entries": items, "count": len(items)}
+    last_key = result.get("LastEvaluatedKey")
+    next_cursor = encode_cursor(claims, last_key, since, until, "desc") if last_key else None
+    return {"entries": items, "count": len(items), "next_cursor": next_cursor, "has_more": bool(last_key)}
 
 
 def update_entry(claims, entry_id, patch):
@@ -460,7 +519,7 @@ def mcp_tools():
     write_security = [{"type": "oauth2", "scopes": [os.environ["ACTION_WRITE_SCOPE"]]}]
     tools = [
         {"name": "log_symptoms", "description": "Log symptoms and related context for the signed-in person. Preserve the user's wording in original_text when available.", "inputSchema": entry_schema(), "securitySchemes": write_security, "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": False}},
-        {"name": "list_symptom_entries", "description": "List only the signed-in person's recent symptom entries.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}, "since": {"type": "string", "format": "date-time"}, "until": {"type": "string", "format": "date-time"}}, "additionalProperties": False}, "securitySchemes": read_security, "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
+        {"name": "list_symptom_entries", "description": "List only the signed-in person's symptom entries. Pass next_cursor as cursor to continue a complete date-range listing.", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100}, "since": {"type": "string", "format": "date-time"}, "until": {"type": "string", "format": "date-time"}, "cursor": {"type": "string"}}, "additionalProperties": False}, "securitySchemes": read_security, "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
         {"name": "update_symptom_entry", "description": "Correct fields on one of the signed-in person's symptom entries.", "inputSchema": {"type": "object", "required": ["entry_id", "changes"], "properties": {"entry_id": {"type": "string"}, "changes": entry_schema(False)}, "additionalProperties": False}, "securitySchemes": write_security, "annotations": {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
         {"name": "delete_symptom_entry", "description": "Permanently delete one of the signed-in person's symptom entries. Use only when explicitly requested.", "inputSchema": {"type": "object", "required": ["entry_id"], "properties": {"entry_id": {"type": "string"}}, "additionalProperties": False}, "securitySchemes": write_security, "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": False}},
         {"name": "show_attachment_uploader", "description": "Open the secure file picker for a specific symptom entry. Use when the person asks to attach a photo or document.", "inputSchema": {"type": "object", "required": ["entry_id"], "properties": {"entry_id": {"type": "string"}}, "additionalProperties": False}, "securitySchemes": write_security, "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}},
@@ -527,7 +586,7 @@ def mcp_endpoint(event):
         if name == "log_symptoms":
             payload = create_entry(authenticate(event, os.environ["ACTION_WRITE_SCOPE"]), args)
         elif name == "list_symptom_entries":
-            payload = list_entries(authenticate(event, os.environ["ACTION_READ_SCOPE"]), args.get("limit", 50), args.get("since"), args.get("until"))
+            payload = list_entries(authenticate(event, os.environ["ACTION_READ_SCOPE"]), args.get("limit", 50), args.get("since"), args.get("until"), args.get("cursor"))
         elif name == "update_symptom_entry":
             payload = update_entry(authenticate(event, os.environ["ACTION_WRITE_SCOPE"]), args.get("entry_id", ""), args.get("changes") or {})
         elif name == "delete_symptom_entry":
@@ -585,7 +644,7 @@ def lambda_handler(event: dict[str, Any], context: Any):
             return response(201, create_entry(authenticate(event, os.environ["ACTION_WRITE_SCOPE"]), parse_body(event)))
         if path == "/entries" and method == "GET":
             query = event.get("queryStringParameters") or {}
-            return response(200, list_entries(authenticate(event, os.environ["ACTION_READ_SCOPE"]), query.get("limit", 50), query.get("since"), query.get("until")))
+            return response(200, list_entries(authenticate(event, os.environ["ACTION_READ_SCOPE"]), query.get("limit", 50), query.get("since"), query.get("until"), query.get("cursor")))
         if path.startswith("/entries/") and method == "PUT":
             return response(200, update_entry(authenticate(event, os.environ["ACTION_WRITE_SCOPE"]), path.split("/", 2)[2], parse_body(event)))
         if path.startswith("/entries/") and method == "DELETE":

@@ -17,6 +17,16 @@ Globals:
     Tracing: Active
 
 Resources:
+  PaginationCursorSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Encryption material for opaque, user-bound symptom pagination cursors
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
   SymptomAttachmentBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -165,6 +175,7 @@ Resources:
           ACTION_WRITE_SCOPE: planelocket-symptoms/write
           ATTACHMENT_BUCKET: !Ref SymptomAttachmentBucket
           ATTACHMENT_BUCKET_ORIGIN: !Sub https://${SymptomAttachmentBucket}.s3.${AWS::Region}.${AWS::URLSuffix}
+          CURSOR_SECRET: !Sub '{{resolve:secretsmanager:${PaginationCursorSecret}:SecretString}}'
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref SymptomTable

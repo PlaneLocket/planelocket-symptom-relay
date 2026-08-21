@@ -42,6 +42,16 @@ picker to a five-minute presigned S3 URL. `start_attachment_upload` and
 Deletion is marked destructive and should be used only on an explicit request.
 All write operations return the authoritative stored record or deleted record.
 
+`list_symptom_entries` supports `since`, `until`, `limit`, and `cursor`. Results
+include `next_cursor` and `has_more`. Cursors are encrypted, expire after one
+hour, and are bound to the authenticated Cognito subject and original filters.
+Existing `entries` and `count` response fields are preserved.
+
+New timestamps are stored in a fixed-width UTC representation so DynamoDB sort
+key date ranges remain chronological. Before enabling long-range reports, audit
+and migrate any legacy records whose sort keys use offsets or variable timestamp
+precision.
+
 ## Deployment
 
 Pushes to `main` run tests, SAM validation/build, and deploy to AWS account
