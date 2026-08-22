@@ -887,7 +887,7 @@ def openapi_document(event):
 def lambda_handler(event: dict[str, Any], context: Any):
     try:
         method, path = method_path(event)
-        if method == "OPTIONS" and path.startswith("/reports/"):
+        if method == "OPTIONS" and (path == "/entries" or path.startswith("/entries/") or path.startswith("/reports/")):
             return {"statusCode": 204, "headers": cors_headers(), "body": ""}
         if method == "GET" and path == "/.well-known/oauth-protected-resource/mcp":
             return response(200, mcp_metadata(event))
