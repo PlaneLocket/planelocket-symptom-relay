@@ -357,6 +357,15 @@ def test_report_options_is_unauthenticated_and_cors_enabled():
     assert result["headers"]["access-control-allow-headers"] == "Authorization,Content-Type"
 
 
+def test_entry_options_is_unauthenticated_and_cors_enabled():
+    for path in ("/entries", "/entries/legacy%23id/attachments/file-id"):
+        result = app.lambda_handler(api_event("OPTIONS", path), None)
+        assert result["statusCode"] == 204
+        assert result["body"] == ""
+        assert result["headers"]["access-control-allow-origin"] == "https://health.loopers.space"
+        assert result["headers"]["access-control-allow-methods"] == "GET,POST,OPTIONS"
+
+
 def test_clinician_report_json_route_is_oauth_protected(environment, monkeypatch):
     claims = {"sub": "person-a"}
     app.create_entry(claims, {
