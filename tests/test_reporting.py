@@ -1,3 +1,4 @@
+import base64
 import csv
 import io
 
@@ -137,3 +138,20 @@ def test_clinician_pdf_is_a_real_multipage_pdf():
     pdf = pdf_reports.build_pdf(report)
     assert pdf.startswith(b"%PDF-")
     assert len(pdf) > 5000
+
+
+def test_clinician_pdf_embeds_supported_attachment_images():
+    values = entries()
+    attachment = {
+        "filename": "symptom.png", "content_type": "image/png", "size_bytes": 68,
+        "occurred_at": values[0]["occurred_at"], "object_key": "users/private/symptom.png",
+    }
+    report = reporting.clinician_report(
+        "rheumatology", values, reporting.normalize_entries(values), [attachment],
+        "2026-08-21T05:00:00.000000Z", "2026-08-23T04:59:59.000000Z",
+    )
+    image = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+    pdf = pdf_reports.build_pdf(report, lambda item: image)
+    assert pdf.startswith(b"%PDF-")
+    assert b"/Subtype /Image" in pdf
+    assert len(pdf) > 4000
