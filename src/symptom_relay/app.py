@@ -18,6 +18,7 @@ from boto3.dynamodb.conditions import Key
 from jwt import PyJWKClient
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import reporting
+import pdf_reports
 
 LOG = logging.getLogger()
 LOG.setLevel(logging.INFO)
@@ -81,6 +82,20 @@ def text_response(status, body, content_type, filename=None):
     if filename:
         headers["content-disposition"] = f'attachment; filename="{filename}"'
     return {"statusCode": status, "headers": headers, "body": body}
+
+
+def binary_response(status, body, content_type, filename):
+    return {
+        "statusCode": status,
+        "headers": {
+            "content-type": content_type,
+            "content-disposition": f'attachment; filename="{filename}"',
+            "cache-control": "no-store",
+            **cors_headers(),
+        },
+        "isBase64Encoded": True,
+        "body": base64.b64encode(body).decode(),
+    }
 
 
 def cors_headers():
@@ -544,6 +559,14 @@ def report_data(claims, query):
     return since, until, entries, rows
 
 
+def report_attachments(claims, entries):
+    indexed = []
+    for entry in entries:
+        for attachment in list_attachments(claims, entry["entry_id"])["attachments"]:
+            indexed.append({**attachment, "occurred_at": entry["occurred_at"]})
+    return indexed
+
+
 def update_entry(claims, entry_id, patch):
     validate_entry(patch, partial=True)
     key = {"PK": owner_key(claims), "SK": entry_sk(entry_id)}
@@ -700,6 +723,7 @@ def openapi_document(event):
         "/reports/symptoms": {"get": read_operation("getSymptomOccurrences", "Normalized symptom occurrences")},
         "/reports/correlations": {"get": read_operation("getSymptomAssociations", "Conservative association analysis")},
         "/reports/export": {"get": read_operation("exportSymptomOccurrences", "CSV symptom export")},
+        "/reports/clinician-report": {"get": read_operation("getClinicianReport", "Cardiology or rheumatology report as JSON or PDF")},
         "/entries/{entry_id}/attachments": {"get": read_operation("listEntryAttachments", "Private attachment index")},
         "/entries/{entry_id}/attachments/{attachment_id}": {"get": read_operation("getEntryAttachment", "Short-lived private attachment download")},
     }
@@ -744,7 +768,25 @@ def lambda_handler(event: dict[str, Any], context: Any):
             if path == "/reports/export":
                 if query.get("format", "csv") != "csv" or query.get("dataset", "occurrences") != "occurrences":
                     raise RelayError(400, "Initial exports support dataset=occurrences and format=csv.")
-                return text_response(200, reporting.occurrences_csv(rows), "text/csv; charset=utf-8", "symptom-occurrences.csv")
+                specialty = query.get("specialty")
+                if specialty:
+                    if specialty.casefold() not in {"cardiology", "rheumatology"}:
+                        raise RelayError(400, "specialty must be cardiology or rheumatology.")
+                    rows = reporting.filter_rows(rows, group=specialty)
+                filename = f"{specialty.casefold()}-symptom-occurrences.csv" if specialty else "symptom-occurrences.csv"
+                return text_response(200, reporting.occurrences_csv(rows), "text/csv; charset=utf-8", filename)
+            if path == "/reports/clinician-report":
+                specialty = query.get("specialty")
+                try:
+                    report = reporting.clinician_report(specialty, entries, rows, report_attachments(claims, entries), since, until)
+                except ValueError as exc:
+                    raise RelayError(400, str(exc)) from exc
+                output_format = query.get("format", "json").casefold()
+                if output_format == "json":
+                    return response(200, report)
+                if output_format == "pdf":
+                    return binary_response(200, pdf_reports.build_pdf(report), "application/pdf", f"{specialty.casefold()}-symptom-report.pdf")
+                raise RelayError(400, "format must be json or pdf.")
             return response(404, {"message": "Report route not found."})
         if method == "GET" and re.fullmatch(r"/entries/[^/]+/attachments", path):
             entry_id = path.split("/", 3)[2]
