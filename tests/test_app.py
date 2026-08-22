@@ -357,6 +357,15 @@ def test_report_options_is_unauthenticated_and_cors_enabled():
     assert result["headers"]["access-control-allow-headers"] == "Authorization,Content-Type"
 
 
+def test_entry_options_is_unauthenticated_and_cors_enabled():
+    for path in ("/entries", "/entries/legacy%23id/attachments/file-id"):
+        result = app.lambda_handler(api_event("OPTIONS", path), None)
+        assert result["statusCode"] == 204
+        assert result["body"] == ""
+        assert result["headers"]["access-control-allow-origin"] == "https://health.loopers.space"
+        assert result["headers"]["access-control-allow-methods"] == "GET,POST,OPTIONS"
+
+
 def test_clinician_report_json_route_is_oauth_protected(environment, monkeypatch):
     claims = {"sub": "person-a"}
     app.create_entry(claims, {
@@ -388,6 +397,15 @@ def test_public_report_exposes_private_download_path_but_not_object_key():
     assert "object_key" not in result["attachments"][0]
     assert result["attachments"][0]["download_path"].startswith("/entries/")
     assert "object_key" not in result["ecg_attachments"][0]
+
+
+def test_attachment_download_path_encodes_legacy_entry_id_fragment():
+    path = app.attachment_download_path({
+        "entry_id": "2026-08-19T20:31:00Z#legacy-id",
+        "attachment_id": "11111111-1111-1111-1111-111111111111",
+    })
+    assert "%23legacy-id" in path
+    assert "#" not in path
 
 
 def test_dashboard_can_create_and_complete_verified_attachment(environment, monkeypatch):

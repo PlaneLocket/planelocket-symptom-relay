@@ -9,7 +9,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import boto3
 import jwt
@@ -677,11 +677,18 @@ def report_attachments(claims, entries):
             **public_attachment(item),
             "object_key": item["object_key"],
             "occurred_at": timestamps[item["entry_id"]],
-            "download_path": f'/entries/{item["entry_id"]}/attachments/{item["attachment_id"]}',
+            "download_path": attachment_download_path(item),
         }
         for item in items
         if item.get("status") == "ready" and item.get("entry_id") in timestamps
     ]
+
+
+def attachment_download_path(item):
+    """Build a browser-safe path, including for legacy IDs containing #."""
+    entry_id = quote(str(item["entry_id"]), safe="")
+    attachment_id = quote(str(item["attachment_id"]), safe="")
+    return f"/entries/{entry_id}/attachments/{attachment_id}"
 
 
 def public_report(report):
@@ -880,7 +887,7 @@ def openapi_document(event):
 def lambda_handler(event: dict[str, Any], context: Any):
     try:
         method, path = method_path(event)
-        if method == "OPTIONS" and path.startswith("/reports/"):
+        if method == "OPTIONS" and (path == "/entries" or path.startswith("/entries/") or path.startswith("/reports/")):
             return {"statusCode": 204, "headers": cors_headers(), "body": ""}
         if method == "GET" and path == "/.well-known/oauth-protected-resource/mcp":
             return response(200, mcp_metadata(event))
