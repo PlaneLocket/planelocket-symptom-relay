@@ -83,6 +83,7 @@ def environment(monkeypatch):
     monkeypatch.setenv("ATTACHMENT_BUCKET", "attachments")
     monkeypatch.setenv("ATTACHMENT_BUCKET_ORIGIN", "https://attachments.s3.us-east-2.amazonaws.com")
     monkeypatch.setenv("CURSOR_SECRET", "unit-test-only-secret")
+    monkeypatch.setenv("DASHBOARD_ORIGIN", "https://health.loopers.space")
     app._cursor_key = None
     fake = FakeTable()
     fake_s3 = FakeS3()
@@ -303,4 +304,14 @@ def test_report_summary_route_is_oauth_protected_and_no_store(environment, monke
     payload = json.loads(result["body"])
     assert result["statusCode"] == 200
     assert result["headers"]["cache-control"] == "no-store"
+    assert result["headers"]["access-control-allow-origin"] == "https://health.loopers.space"
     assert payload["occurrence_count"] == 1
+
+
+def test_report_options_is_unauthenticated_and_cors_enabled():
+    result = app.lambda_handler(api_event("OPTIONS", "/reports/summary"), None)
+    assert result["statusCode"] == 204
+    assert result["body"] == ""
+    assert result["headers"]["access-control-allow-origin"] == "https://health.loopers.space"
+    assert result["headers"]["access-control-allow-methods"] == "GET,OPTIONS"
+    assert result["headers"]["access-control-allow-headers"] == "Authorization,Content-Type"
