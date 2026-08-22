@@ -390,6 +390,15 @@ def test_public_report_exposes_private_download_path_but_not_object_key():
     assert "object_key" not in result["ecg_attachments"][0]
 
 
+def test_attachment_download_path_encodes_legacy_entry_id_fragment():
+    path = app.attachment_download_path({
+        "entry_id": "2026-08-19T20:31:00Z#legacy-id",
+        "attachment_id": "11111111-1111-1111-1111-111111111111",
+    })
+    assert "%23legacy-id" in path
+    assert "#" not in path
+
+
 def test_dashboard_can_create_and_complete_verified_attachment(environment, monkeypatch):
     claims = {"sub": "person-a"}
     entry = app.create_entry(claims, {"symptoms": [{"name": "PVCs"}]})
