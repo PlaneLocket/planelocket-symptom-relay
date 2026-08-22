@@ -22,7 +22,7 @@ import pdf_reports
 
 LOG = logging.getLogger()
 LOG.setLevel(logging.INFO)
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 MAX_BODY_BYTES = 64 * 1024
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_ATTACHMENTS_PER_ENTRY = 10
@@ -278,6 +278,69 @@ def symptom_schema(required=False):
     return schema
 
 
+def context_schema():
+    numeric = lambda minimum, maximum: {"type": "number", "minimum": minimum, "maximum": maximum}
+    return {
+        "type": "object",
+        "minProperties": 1,
+        "properties": {
+            "source": {"type": "string", "maxLength": 50},
+            "wellness": {
+                "type": "object", "minProperties": 1, "additionalProperties": False,
+                "properties": {
+                    "resting_heart_rate_bpm": numeric(20, 250),
+                    "average_stress": numeric(0, 100),
+                    "hrv_ms": numeric(0, 500),
+                    "body_battery_high": numeric(0, 100),
+                    "body_battery_low": numeric(0, 100),
+                    "sleep_score": numeric(0, 100),
+                    "steps": numeric(0, 200000),
+                },
+            },
+            "activity": {
+                "type": "object", "minProperties": 1, "additionalProperties": False,
+                "properties": {
+                    "type": {"type": "string", "maxLength": 100},
+                    "duration_minutes": numeric(0, 1440),
+                    "intensity_minutes": numeric(0, 1440),
+                    "distance_km": numeric(0, 1000),
+                    "calories": numeric(0, 20000),
+                    "average_heart_rate_bpm": numeric(20, 250),
+                    "max_heart_rate_bpm": numeric(20, 300),
+                },
+            },
+            "hydration": {
+                "type": "object", "minProperties": 1, "additionalProperties": False,
+                "properties": {
+                    "fluid_ml": numeric(0, 20000),
+                    "sodium_mg": numeric(0, 20000),
+                    "potassium_mg": numeric(0, 20000),
+                    "magnesium_mg": numeric(0, 5000),
+                    "carbohydrate_g": numeric(0, 1000),
+                },
+            },
+            "weather": {
+                "type": "object", "minProperties": 1, "additionalProperties": False,
+                "properties": {
+                    "temperature_f": numeric(-100, 160),
+                    "feels_like_f": numeric(-120, 180),
+                    "humidity_percent": numeric(0, 100),
+                    "dew_point_f": numeric(-120, 120),
+                },
+            },
+            "treatment": {
+                "type": "object", "minProperties": 1, "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string", "maxLength": 200},
+                    "dose": {"type": "string", "maxLength": 100},
+                    "event": {"type": "string", "enum": ["administered", "started", "stopped", "missed", "changed"]},
+                },
+            },
+        },
+        "additionalProperties": False,
+    }
+
+
 def entry_schema(required=True):
     schema = {
         "type": "object",
@@ -285,6 +348,7 @@ def entry_schema(required=True):
             "occurred_at": {"type": "string", "format": "date-time"},
             "symptoms": {"type": "array", "items": symptom_schema(), "maxItems": 50},
             "sleep_hours": {"type": "number", "minimum": 0, "maximum": 24},
+            "context": context_schema(),
             "medications": {"type": "array", "items": {"type": "string", "maxLength": 200}, "maxItems": 50},
             "tags": {"type": "array", "items": {"type": "string", "maxLength": 50}, "maxItems": 30},
             "notes": {"type": "string", "maxLength": 4000},
@@ -326,9 +390,43 @@ def validate_entry(body, partial=False):
                 raise RelayError(400, "Symptom severity must be from 0 through 10.")
     if "sleep_hours" in body and (isinstance(body["sleep_hours"], bool) or not isinstance(body["sleep_hours"], (int, float, Decimal)) or not 0 <= body["sleep_hours"] <= 24):
         raise RelayError(400, "sleep_hours must be numeric from 0 through 24.")
+    if "context" in body:
+        validate_context(body["context"])
     for field, limit in (("medications", 50), ("tags", 30)):
         if field in body and (not isinstance(body[field], list) or len(body[field]) > limit or not all(isinstance(v, str) for v in body[field])):
             raise RelayError(400, f"{field} must be an array of strings with at most {limit} items.")
+
+
+def validate_context(value):
+    schema = context_schema()
+    if not isinstance(value, dict) or not value:
+        raise RelayError(400, "context must be a non-empty object.")
+    unknown = sorted(set(value) - set(schema["properties"]))
+    if unknown:
+        raise RelayError(400, "Unsupported context fields: " + ", ".join(unknown))
+    for section, section_value in value.items():
+        section_schema = schema["properties"][section]
+        if section == "source":
+            if not isinstance(section_value, str) or len(section_value) > 50:
+                raise RelayError(400, "context.source must be a string of at most 50 characters.")
+            continue
+        if not isinstance(section_value, dict) or not section_value:
+            raise RelayError(400, f"context.{section} must be a non-empty object.")
+        section_unknown = sorted(set(section_value) - set(section_schema["properties"]))
+        if section_unknown:
+            raise RelayError(400, f"Unsupported context.{section} fields: " + ", ".join(section_unknown))
+        for field, field_value in section_value.items():
+            field_schema = section_schema["properties"][field]
+            path = f"context.{section}.{field}"
+            if field_schema.get("type") == "number":
+                if isinstance(field_value, bool) or not isinstance(field_value, (int, float, Decimal)):
+                    raise RelayError(400, f"{path} must be numeric.")
+                if not field_schema["minimum"] <= field_value <= field_schema["maximum"]:
+                    raise RelayError(400, f"{path} must be from {field_schema['minimum']} through {field_schema['maximum']}.")
+            elif not isinstance(field_value, str) or len(field_value) > field_schema.get("maxLength", 1000):
+                raise RelayError(400, f"{path} must be a valid string.")
+            if "enum" in field_schema and field_value not in field_schema["enum"]:
+                raise RelayError(400, f"{path} must be one of: " + ", ".join(field_schema["enum"]) + ".")
 
 
 def owner_key(claims):
