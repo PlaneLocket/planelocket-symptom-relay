@@ -220,6 +220,7 @@ Resources:
           COGNITO_TOKEN_ENDPOINT: !Sub https://planelocket-symptoms-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/oauth2/token
           ACTION_READ_SCOPE: planelocket-symptoms/read
           ACTION_WRITE_SCOPE: planelocket-symptoms/write
+          DASHBOARD_ORIGIN: !Ref DashboardOrigin
           ATTACHMENT_BUCKET: !Ref SymptomAttachmentBucket
           ATTACHMENT_BUCKET_ORIGIN: !Sub https://${SymptomAttachmentBucket}.s3.${AWS::Region}.${AWS::URLSuffix}
           CURSOR_SECRET: !Sub '{{resolve:secretsmanager:${PaginationCursorSecret}:SecretString}}'
@@ -244,6 +245,7 @@ Resources:
         ReportsSymptoms: {Type: HttpApi, Properties: {Path: /reports/symptoms, Method: GET}}
         ReportsCorrelations: {Type: HttpApi, Properties: {Path: /reports/correlations, Method: GET}}
         ReportsExport: {Type: HttpApi, Properties: {Path: /reports/export, Method: GET}}
+        ReportsOptions: {Type: HttpApi, Properties: {Path: '/reports/{proxy+}', Method: OPTIONS}}
 
 Outputs:
   RelayApiUrl:
