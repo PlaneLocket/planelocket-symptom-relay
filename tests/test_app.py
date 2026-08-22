@@ -78,6 +78,7 @@ def environment(monkeypatch):
     monkeypatch.setenv("ACTION_WRITE_SCOPE", "planelocket-symptoms/write")
     monkeypatch.setenv("COGNITO_ISSUER", "https://issuer.example/pool")
     monkeypatch.setenv("COGNITO_CLIENT_ID", "client")
+    monkeypatch.setenv("COGNITO_DASHBOARD_CLIENT_ID", "dashboard-client")
     monkeypatch.setenv("COGNITO_AUTHORIZATION_ENDPOINT", "https://auth.example/authorize")
     monkeypatch.setenv("COGNITO_TOKEN_ENDPOINT", "https://auth.example/token")
     monkeypatch.setenv("ATTACHMENT_BUCKET", "attachments")
@@ -100,6 +101,10 @@ def api_event(method, path, body=None):
         "requestContext": {"domainName": "api.example", "http": {"method": method, "path": path}},
         "body": json.dumps(body) if body is not None else None,
     }
+
+
+def test_both_oauth_clients_are_accepted():
+    assert app.accepted_client_ids() == {"client", "dashboard-client"}
 
 
 def test_create_partitions_entries_by_cognito_subject(environment):
