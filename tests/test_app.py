@@ -130,6 +130,40 @@ def test_decimal_sleep_hours_are_stored_as_dynamodb_decimal(environment):
     assert not isinstance(stored["sleep_hours"], float)
 
 
+def test_normalized_phase5_context_is_stored_as_dynamodb_decimals(environment):
+    created = app.create_entry(
+        {"sub": "person-a"},
+        {
+            "symptoms": [{"name": "Garmin wellness"}],
+            "context": {
+                "source": "garmin",
+                "wellness": {"resting_heart_rate_bpm": 58, "hrv_ms": 42.5, "sleep_score": 81},
+                "activity": {"type": "running", "duration_minutes": 52.4, "distance_km": 7.1},
+                "weather": {"temperature_f": 88.2, "humidity_percent": 71},
+            },
+        },
+    )
+    stored = next(iter(environment.items.values()))
+    assert created["context"]["activity"]["duration_minutes"] == 52.4
+    assert stored["context"]["activity"]["duration_minutes"] == Decimal("52.4")
+    assert stored["context"]["weather"]["temperature_f"] == Decimal("88.2")
+
+
+def test_phase5_context_rejects_unknown_and_out_of_range_fields():
+    with pytest.raises(app.RelayError, match="Unsupported context.activity fields"):
+        app.validate_entry({"symptoms": [{"name": "PVCs"}], "context": {"activity": {"mystery": 1}}})
+    with pytest.raises(app.RelayError, match="humidity_percent must be from 0 through 100"):
+        app.validate_entry({"symptoms": [{"name": "PVCs"}], "context": {"weather": {"humidity_percent": 101}}})
+
+
+def test_phase5_treatment_event_is_restricted():
+    with pytest.raises(app.RelayError, match="must be one of"):
+        app.validate_entry({
+            "symptoms": [{"name": "morning stiffness"}],
+            "context": {"treatment": {"name": "adalimumab", "event": "maybe"}},
+        })
+
+
 def test_decimal_sleep_hours_can_be_updated(environment):
     created = app.create_entry({"sub": "person-a"}, {"symptoms": [{"name": "Garmin wellness"}]})
     updated = app.update_entry({"sub": "person-a"}, created["entry_id"], {"sleep_hours": 6.45})
