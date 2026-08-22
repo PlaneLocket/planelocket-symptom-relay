@@ -66,6 +66,8 @@ and the maximum is 366 days.
 - `GET /reports/correlations?outcome=...&factor=sleep_hours` — conservative
   association output with sample size, suppression, and noncausation warnings
 - `GET /reports/export?dataset=occurrences&format=csv` — flattened CSV export
+- `GET /reports/clinician-report?specialty=cardiology|rheumatology&format=json|pdf`
+  — clinician-focused browser preview data or server-generated PDF
 - `GET /entries/{entry_id}/attachments` — private attachment index
 - `GET /entries/{entry_id}/attachments/{attachment_id}` — five-minute download
 
@@ -73,6 +75,15 @@ Raw symptom names are retained. A reporting-only alias layer permits exact
 selection of `PVC`, `PVCs`, and `palpitations` while also assigning them to the
 `cardiology` group. Days without entries remain explicitly missing/unlogged and
 are never presented as symptom-free.
+
+Clinician PDFs are generated inside the relay Lambda; report data is not sent
+to a third-party document service. Cardiology reports include PVC/palpitation
+burden, time-of-day distribution, available context, event wording, treatment
+markers, and an ECG attachment index. Rheumatology reports include morning
+stiffness, pain location, weekly burden, and transparent possible-flare
+detection. A possible flare requires at least three consecutive severity-logged
+days above the trailing 14-day mean with at least seven prior logged severity
+days. The label is explicitly non-diagnostic.
 
 ## Deployment
 
