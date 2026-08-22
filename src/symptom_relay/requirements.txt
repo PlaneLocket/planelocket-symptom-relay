@@ -1,2 +1,2 @@
 PyJWT[crypto]>=2.10,<3
-
+reportlab>=4.2,<5
