@@ -1,8 +1,9 @@
 import csv
 import io
 import statistics
+import re
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 
@@ -168,3 +169,120 @@ def occurrences_csv(rows):
                 value[field] = "'" + item
         writer.writerow(value)
     return output.getvalue()
+
+
+def _severity_stats(rows):
+    scores = [float(row["severity"]) for row in rows if row.get("severity") is not None]
+    return {
+        "count": len(rows),
+        "severity_count": len(scores),
+        "mean_severity": round(statistics.fmean(scores), 2) if scores else None,
+        "max_severity": max(scores) if scores else None,
+    }
+
+
+def _time_of_day(rows):
+    buckets = {"overnight": 0, "morning": 0, "afternoon": 0, "evening": 0}
+    for row in rows:
+        hour = int(row["local_hour"])
+        bucket = "overnight" if hour < 6 else "morning" if hour < 12 else "afternoon" if hour < 18 else "evening"
+        buckets[bucket] += 1
+    return buckets
+
+
+def _entry_context(entries):
+    exercise_terms = re.compile(r"\b(run|running|exercise|workout|yardwork|cleaning|heavy effort|activity)\b", re.I)
+    hydration_terms = re.compile(r"\b(hydrat|electrolyte|liquid i\.v\.|water)\b", re.I)
+    weather_terms = re.compile(r"\b(heat|hot|humid|humidity|temperature|weather)\b", re.I)
+    result = {"sleep_observations": 0, "exercise_or_effort_entries": 0, "hydration_entries": 0, "weather_entries": 0}
+    medication_markers = []
+    for entry in entries:
+        text = " ".join([str(entry.get("original_text") or ""), str(entry.get("notes") or ""), " ".join(entry.get("tags") or [])])
+        result["sleep_observations"] += int(entry.get("sleep_hours") is not None)
+        result["exercise_or_effort_entries"] += int(bool(exercise_terms.search(text)))
+        result["hydration_entries"] += int(bool(hydration_terms.search(text)))
+        result["weather_entries"] += int(bool(weather_terms.search(text)))
+        if entry.get("medications"):
+            medication_markers.append({"occurred_at": entry["occurred_at"], "medications": entry["medications"]})
+    result["medication_markers"] = medication_markers
+    return result
+
+
+def _weekly_burden(rows):
+    weeks = defaultdict(list)
+    for row in rows:
+        day = datetime.fromisoformat(row["local_date"]).date()
+        monday = day - timedelta(days=day.weekday())
+        weeks[monday.isoformat()].append(row)
+    return [{"week_start": week, **_severity_stats(values)} for week, values in sorted(weeks.items())]
+
+
+def _possible_flares(rows):
+    by_day = defaultdict(list)
+    for row in rows:
+        if row.get("severity") is not None:
+            by_day[row["local_date"]].append(float(row["severity"]))
+    daily = [(datetime.fromisoformat(day).date(), statistics.fmean(scores)) for day, scores in sorted(by_day.items())]
+    flagged = []
+    for index, (day, mean) in enumerate(daily):
+        trailing = [value for prior_day, value in daily[:index] if 0 < (day - prior_day).days <= 14]
+        if len(trailing) >= 7 and mean > statistics.fmean(trailing):
+            flagged.append((day, mean, statistics.fmean(trailing)))
+    periods = []
+    run = []
+    for item in flagged:
+        if run and (item[0] - run[-1][0]).days != 1:
+            if len(run) >= 3:
+                periods.append(run)
+            run = []
+        run.append(item)
+    if len(run) >= 3:
+        periods.append(run)
+    return [{
+        "label": "possible flare",
+        "start": period[0][0].isoformat(),
+        "end": period[-1][0].isoformat(),
+        "logged_days": len(period),
+        "mean_severity": round(statistics.fmean(item[1] for item in period), 2),
+        "trailing_baseline": round(statistics.fmean(item[2] for item in period), 2),
+    } for period in periods]
+
+
+def clinician_report(specialty, entries, rows, attachments, since, until):
+    specialty = str(specialty or "").casefold()
+    if specialty not in {"cardiology", "rheumatology"}:
+        raise ValueError("specialty must be cardiology or rheumatology")
+    selected = filter_rows(rows, group=specialty)
+    report = {
+        "report_type": specialty,
+        "title": f"{specialty.title()} Symptom Report",
+        "period": {"since": since, "until": until, "timezone": REPORTING_TIMEZONE},
+        "generated_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+        "coverage": coverage(entries, since, until),
+        "summary": _severity_stats(selected),
+        "context": _entry_context(entries),
+        "events": selected,
+        "attachments": attachments,
+        "disclosures": [
+            "This is a patient-maintained symptom log and is not a diagnosis.",
+            "Days without entries are missing or unlogged and are not assumed symptom-free.",
+            "Associations shown here do not establish causation.",
+        ],
+    }
+    if specialty == "cardiology":
+        report["time_of_day"] = _time_of_day(selected)
+        report["ecg_attachments"] = [item for item in attachments if "ecg" in str(item.get("filename", "")).casefold() or "kardia" in str(item.get("filename", "")).casefold()]
+    else:
+        locations = defaultdict(list)
+        stiffness = []
+        for row in selected:
+            if row.get("location"):
+                locations[row["location"]].append(row)
+            if "stiff" in row["canonical_symptom"].casefold():
+                stiffness.append(row)
+        report["morning_stiffness"] = _severity_stats(stiffness)
+        report["pain_by_location"] = [{"location": location, **_severity_stats(values)} for location, values in sorted(locations.items(), key=lambda item: (-len(item[1]), item[0].casefold()))]
+        report["weekly_burden"] = _weekly_burden(selected)
+        report["possible_flares"] = _possible_flares(selected)
+        report["flare_rule"] = "At least 3 consecutive logged days with daily mean severity above the trailing 14-day baseline; at least 7 prior severity-logged days are required. Results are labeled possible flare."
+    return report
