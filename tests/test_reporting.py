@@ -15,6 +15,13 @@ def entries():
             "entry_id": "one", "occurred_at": "2026-08-21T23:00:00.000000Z",
             "symptoms": [{"name": "PVCs", "severity": 6}, {"name": "pain", "severity": 4, "location": "hip"}],
             "sleep_hours": 6.5, "tags": ["evening"], "medications": [], "original_text": "PVCs and hip pain",
+            "context": {
+                "source": "garmin",
+                "wellness": {"resting_heart_rate_bpm": 58, "sleep_score": 81},
+                "activity": {"type": "running", "duration_minutes": 52},
+                "hydration": {"fluid_ml": 500, "sodium_mg": 500, "potassium_mg": 200, "magnesium_mg": 50},
+                "weather": {"temperature_f": 88, "humidity_percent": 71},
+            },
         },
         {
             "entry_id": "two", "occurred_at": "2026-08-22T13:00:00.000000Z",
@@ -40,6 +47,9 @@ def test_summary_includes_count_mean_max_and_missingness_warning():
     assert result["mean_severity"] == 4.33
     assert result["max_severity"] == 6
     assert "not assumed symptom-free" in result["coverage"]["warning"]
+    assert result["context_coverage"]["entries_by_section"]["activity"] == 1
+    assert result["context_coverage"]["observations_by_field"]["hydration.potassium_mg"] == 1
+    assert "not interpreted as zero" in result["context_coverage"]["warning"]
 
 
 def test_timeline_keeps_count_mean_and_max():
@@ -49,6 +59,7 @@ def test_timeline_keeps_count_mean_and_max():
     assert first["occurrence_count"] == 2
     assert first["mean_severity"] == 5
     assert first["max_severity"] == 6
+    assert first["context_coverage"]["entries_by_section"]["weather"] == 1
 
 
 def test_small_association_is_suppressed_and_disclaimed():
@@ -65,6 +76,9 @@ def test_occurrence_csv_is_flat_and_parseable():
     assert len(parsed) == 3
     assert parsed[0]["symptom_name"] == "PVCs"
     assert parsed[0]["tags"] == "evening"
+    assert parsed[0]["activity_type"] == "running"
+    assert parsed[0]["hydration_magnesium_mg"] == "50"
+    assert parsed[0]["weather_humidity_percent"] == "71"
 
 
 def test_occurrence_csv_neutralizes_spreadsheet_formulas():

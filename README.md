@@ -52,6 +52,27 @@ key date ranges remain chronological. Before enabling long-range reports, audit
 and migrate any legacy records whose sort keys use offsets or variable timestamp
 precision.
 
+## Phase 5 normalized context
+
+Entries may include a strict, optional `context` object. This keeps enrichment
+at the authoritative source while preserving `original_text` for auditability.
+Existing entries remain valid and are not rewritten.
+
+- `source` — for example `garmin`, `manual`, or a combined ingestion process
+- `wellness` — resting heart rate, stress, HRV, Body Battery high/low, sleep
+  score, and steps
+- `activity` — type, duration, intensity minutes, distance, calories, and
+  average/maximum heart rate
+- `hydration` — fluid, sodium, potassium, magnesium, and carbohydrate amounts
+- `weather` — temperature, feels-like temperature, humidity, and dew point
+- `treatment` — medication or biologic name, dose, and an administered,
+  started, stopped, missed, or changed event
+
+All units are explicit in field names. Missing context remains unknown: reports
+do not convert it to zero or infer that an activity, treatment, or exposure did
+not occur. Normalized values are included in occurrence CSV exports and context
+coverage is returned with summaries and daily timeline records.
+
 ## Reporting API
 
 Reporting uses `America/Chicago` for local-day grouping. All reporting routes
