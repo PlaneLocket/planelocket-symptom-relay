@@ -238,12 +238,14 @@ Resources:
         Health: {Type: HttpApi, Properties: {Path: /health, Method: GET}}
         EntriesGet: {Type: HttpApi, Properties: {Path: /entries, Method: GET}}
         EntriesPost: {Type: HttpApi, Properties: {Path: /entries, Method: POST}}
+        EntriesOptions: {Type: HttpApi, Properties: {Path: /entries, Method: OPTIONS}}
         EntryPut: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}', Method: PUT}}
         EntryDelete: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}', Method: DELETE}}
         EntryAttachmentsGet: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}/attachments', Method: GET}}
         EntryAttachmentGet: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}/attachments/{attachment_id}', Method: GET}}
         EntryAttachmentStart: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}/attachments/start', Method: POST}}
         EntryAttachmentComplete: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}/attachments/{attachment_id}/complete', Method: POST}}
+        EntryOptions: {Type: HttpApi, Properties: {Path: '/entries/{proxy+}', Method: OPTIONS}}
         ReportsSummary: {Type: HttpApi, Properties: {Path: /reports/summary, Method: GET}}
         ReportsTimeline: {Type: HttpApi, Properties: {Path: /reports/timeline, Method: GET}}
         ReportsSymptoms: {Type: HttpApi, Properties: {Path: /reports/symptoms, Method: GET}}
