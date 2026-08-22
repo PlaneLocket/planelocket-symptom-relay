@@ -52,6 +52,28 @@ key date ranges remain chronological. Before enabling long-range reports, audit
 and migrate any legacy records whose sort keys use offsets or variable timestamp
 precision.
 
+## Reporting API
+
+Reporting uses `America/Chicago` for local-day grouping. All reporting routes
+require the read scope, derive the owner from the access token, return
+`Cache-Control: no-store`, and accept optional `since`, `until`, `symptom`, and
+`group` filters where applicable. The default period is the previous 30 days
+and the maximum is 366 days.
+
+- `GET /reports/summary` — counts, mean/max severity, symptom rollups, coverage
+- `GET /reports/timeline` — daily count, mean/max severity, sleep, coverage
+- `GET /reports/symptoms` — one normalized row per symptom occurrence
+- `GET /reports/correlations?outcome=...&factor=sleep_hours` — conservative
+  association output with sample size, suppression, and noncausation warnings
+- `GET /reports/export?dataset=occurrences&format=csv` — flattened CSV export
+- `GET /entries/{entry_id}/attachments` — private attachment index
+- `GET /entries/{entry_id}/attachments/{attachment_id}` — five-minute download
+
+Raw symptom names are retained. A reporting-only alias layer permits exact
+selection of `PVC`, `PVCs`, and `palpitations` while also assigning them to the
+`cardiology` group. Days without entries remain explicitly missing/unlogged and
+are never presented as symptom-free.
+
 ## Deployment
 
 Pushes to `main` run tests, SAM validation/build, and deploy to AWS account

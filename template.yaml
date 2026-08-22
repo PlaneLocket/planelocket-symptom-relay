@@ -190,6 +190,13 @@ Resources:
         EntriesPost: {Type: HttpApi, Properties: {Path: /entries, Method: POST}}
         EntryPut: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}', Method: PUT}}
         EntryDelete: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}', Method: DELETE}}
+        EntryAttachmentsGet: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}/attachments', Method: GET}}
+        EntryAttachmentGet: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}/attachments/{attachment_id}', Method: GET}}
+        ReportsSummary: {Type: HttpApi, Properties: {Path: /reports/summary, Method: GET}}
+        ReportsTimeline: {Type: HttpApi, Properties: {Path: /reports/timeline, Method: GET}}
+        ReportsSymptoms: {Type: HttpApi, Properties: {Path: /reports/symptoms, Method: GET}}
+        ReportsCorrelations: {Type: HttpApi, Properties: {Path: /reports/correlations, Method: GET}}
+        ReportsExport: {Type: HttpApi, Properties: {Path: /reports/export, Method: GET}}
 
 Outputs:
   RelayApiUrl:
