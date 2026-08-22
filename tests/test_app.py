@@ -60,8 +60,9 @@ class FakeS3:
         value = self.objects[Key]
         return {"ContentLength": len(value["body"]), "ContentType": value["content_type"]}
 
-    def get_object(self, Bucket, Key, Range):
-        return {"Body": FakeBody(self.objects[Key]["body"][:32])}
+    def get_object(self, Bucket, Key, Range=None):
+        body = self.objects[Key]["body"]
+        return {"Body": FakeBody(body[:32] if Range else body)}
 
     def copy_object(self, Bucket, Key, CopySource, **kwargs):
         self.objects[Key] = dict(self.objects[CopySource["Key"]])
@@ -352,7 +353,7 @@ def test_report_options_is_unauthenticated_and_cors_enabled():
     assert result["statusCode"] == 204
     assert result["body"] == ""
     assert result["headers"]["access-control-allow-origin"] == "https://health.loopers.space"
-    assert result["headers"]["access-control-allow-methods"] == "GET,OPTIONS"
+    assert result["headers"]["access-control-allow-methods"] == "GET,POST,OPTIONS"
     assert result["headers"]["access-control-allow-headers"] == "Authorization,Content-Type"
 
 
@@ -376,3 +377,30 @@ def test_clinician_report_json_route_is_oauth_protected(environment, monkeypatch
     assert payload["report_type"] == "cardiology"
     assert payload["summary"]["count"] == 1
     assert result["headers"]["access-control-allow-origin"] == "https://health.loopers.space"
+
+
+def test_public_report_exposes_private_download_path_but_not_object_key():
+    report = {
+        "attachments": [{"entry_id": "entry", "attachment_id": "attachment", "object_key": "users/private/file", "download_path": "/entries/entry/attachments/attachment"}],
+        "ecg_attachments": [{"entry_id": "entry", "attachment_id": "attachment", "object_key": "users/private/file"}],
+    }
+    result = app.public_report(report)
+    assert "object_key" not in result["attachments"][0]
+    assert result["attachments"][0]["download_path"].startswith("/entries/")
+    assert "object_key" not in result["ecg_attachments"][0]
+
+
+def test_dashboard_can_create_and_complete_verified_attachment(environment, monkeypatch):
+    claims = {"sub": "person-a"}
+    entry = app.create_entry(claims, {"symptoms": [{"name": "PVCs"}]})
+    monkeypatch.setattr(app, "authenticate", lambda event, scope: claims)
+    start = app.lambda_handler(api_event("POST", f'/entries/{entry["entry_id"]}/attachments/start', {
+        "filename": "ecg.png", "content_type": "image/png", "size_bytes": 12,
+    }), None)
+    started = json.loads(start["body"])
+    item = next(value for value in environment.items.values() if value.get("attachment_id") == started["attachment_id"])
+    environment.s3.objects[item["object_key"]] = {"body": b"\x89PNG\r\n\x1a\nDATA", "content_type": "image/png"}
+    complete = app.lambda_handler(api_event("POST", f'/entries/{entry["entry_id"]}/attachments/{started["attachment_id"]}/complete'), None)
+    assert start["statusCode"] == 201
+    assert complete["statusCode"] == 200
+    assert json.loads(complete["body"])["attachment"]["status"] == "ready"
