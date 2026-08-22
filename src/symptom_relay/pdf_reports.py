@@ -6,7 +6,7 @@ from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
-from reportlab.platypus import BaseDocTemplate, Frame, PageTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import BaseDocTemplate, Frame, Image, PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle
 
 
 TEAL = colors.HexColor("#164f4d")
@@ -92,7 +92,34 @@ def _event_table(events, styles):
     return table
 
 
-def build_pdf(report):
+def _attachment_appendix(attachments, styles, attachment_loader=None):
+    story = [PageBreak(), Paragraph("Attachment appendix", styles["title"])]
+    story.append(Paragraph(
+        "Attachments are listed with their related symptom-entry time. Supported JPEG and PNG images up to 5 MiB are reproduced below; PDF and HEIC files remain available through the private dashboard.",
+        styles["small"],
+    ))
+    embedded = 0
+    for item in attachments:
+        story.extend([
+            Paragraph(f'{_text(item.get("occurred_at") or item.get("created_at"))} - {_text(item.get("filename"))} ({_text(item.get("content_type"))})', styles["body"]),
+            Spacer(1, 5),
+        ])
+        if attachment_loader and embedded < 5:
+            data = attachment_loader(item)
+            if data:
+                try:
+                    image = Image(BytesIO(data))
+                    scale = min(1, (6.8 * inch) / image.imageWidth, (7.8 * inch) / image.imageHeight)
+                    image.drawWidth = image.imageWidth * scale
+                    image.drawHeight = image.imageHeight * scale
+                    story.extend([image, Spacer(1, 10)])
+                    embedded += 1
+                except Exception:
+                    story.append(Paragraph("Image preview could not be rendered; the original remains available in the private dashboard.", styles["small"]))
+    return story
+
+
+def build_pdf(report, attachment_loader=None):
     output = BytesIO()
     doc = BaseDocTemplate(output, pagesize=letter, leftMargin=0.65 * inch, rightMargin=0.65 * inch, topMargin=0.62 * inch, bottomMargin=0.7 * inch, title=report["title"], author="PlaneLocket Health")
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="content")
@@ -136,7 +163,7 @@ def build_pdf(report):
     attachments = report.get("ecg_attachments") if report["report_type"] == "cardiology" else report.get("attachments")
     if attachments:
         for item in attachments:
-            story.append(Paragraph(f'{_text(item.get("occurred_at") or item.get("created_at"))} - {_text(item.get("filename"))}', s["body"]))
+            story.append(Paragraph(f'{_text(item.get("occurred_at") or item.get("created_at"))} - {_text(item.get("filename"))} ({_text(item.get("content_type"))})', s["body"]))
     else:
         story.append(Paragraph("No relevant attachments were indexed for this reporting period.", s["body"]))
     markers = report["context"]["medication_markers"]
@@ -149,5 +176,7 @@ def build_pdf(report):
     story.append(Paragraph("Important disclosures", s["h2"]))
     for disclosure in report["disclosures"]:
         story.append(Paragraph("- " + _text(disclosure), s["small"]))
+    if attachments:
+        story.extend(_attachment_appendix(attachments, s, attachment_loader))
     doc.build(story)
     return output.getvalue()
