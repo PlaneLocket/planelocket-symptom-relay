@@ -156,6 +156,17 @@ def jwks_client():
     return _jwks
 
 
+def accepted_client_ids():
+    return {
+        client_id
+        for client_id in (
+            os.environ.get("COGNITO_CLIENT_ID"),
+            os.environ.get("COGNITO_DASHBOARD_CLIENT_ID"),
+        )
+        if client_id
+    }
+
+
 def authenticate(event, required_scope):
     auth = headers_lower(event).get("authorization", "")
     if not auth.startswith("Bearer "):
@@ -167,7 +178,7 @@ def authenticate(event, required_scope):
     except Exception as exc:
         LOG.info("OAuth validation failed: %s", type(exc).__name__)
         raise RelayError(401, "Invalid or expired OAuth access token.") from exc
-    if claims.get("token_use") != "access" or claims.get("client_id") != os.environ["COGNITO_CLIENT_ID"]:
+    if claims.get("token_use") != "access" or claims.get("client_id") not in accepted_client_ids():
         raise RelayError(401, "OAuth access token was not issued for this client.")
     scopes = set(str(claims.get("scope", "")).split())
     if required_scope not in scopes:
