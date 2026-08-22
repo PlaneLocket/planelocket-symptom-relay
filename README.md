@@ -122,6 +122,13 @@ planelocket-symptoms/read
 planelocket-symptoms/write
 ```
 
+The dashboard uses a separate public Cognito application client with
+authorization code plus PKCE and no client secret. Its default callback is
+`https://health.loopers.space/callback`; it receives only `openid`, `email`,
+and `planelocket-symptoms/read`. API CORS permits only the configured
+`DashboardOrigin`. Never place the confidential ChatGPT client secret in the
+dashboard repository or browser bundle.
+
 ## Local validation
 
 ```bash

@@ -7,6 +7,19 @@ Parameters:
     Type: String
     Default: https://chatgpt.com
     Description: Exact callback URL displayed by the ChatGPT custom app editor.
+  DashboardOrigin:
+    Type: String
+    Default: https://health.loopers.space
+    AllowedPattern: '^https://[A-Za-z0-9.-]+$'
+    Description: Exact private dashboard origin allowed by API CORS.
+  DashboardCallbackUrls:
+    Type: CommaDelimitedList
+    Default: https://health.loopers.space/callback
+    Description: Cognito callback URLs for the dashboard PKCE client.
+  DashboardLogoutUrls:
+    Type: CommaDelimitedList
+    Default: https://health.loopers.space/
+    Description: Cognito logout return URLs for the dashboard PKCE client.
 
 Globals:
   Function:
@@ -17,6 +30,14 @@ Globals:
     Tracing: Active
 
 Resources:
+  ServerlessHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: [!Ref DashboardOrigin]
+        AllowHeaders: [Authorization, Content-Type]
+        AllowMethods: [GET, OPTIONS]
+        MaxAge: 600
   PaginationCursorSecret:
     Type: AWS::SecretsManager::Secret
     DeletionPolicy: Retain
@@ -149,6 +170,32 @@ Resources:
         IdToken: hours
         RefreshToken: days
 
+  SymptomDashboardOAuthClient:
+    Type: AWS::Cognito::UserPoolClient
+    DependsOn: SymptomResourceServer
+    Properties:
+      UserPoolId: !Ref SymptomUserPool
+      ClientName: planelocket-symptom-dashboard
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - planelocket-symptoms/read
+      CallbackURLs: !Ref DashboardCallbackUrls
+      LogoutURLs: !Ref DashboardLogoutUrls
+      SupportedIdentityProviders: [COGNITO]
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
   SymptomUserPoolDomain:
     Type: AWS::Cognito::UserPoolDomain
     Properties:
@@ -210,6 +257,8 @@ Outputs:
   OAuthTokenEndpoint:
     Value: !Sub https://planelocket-symptoms-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/oauth2/token
   OAuthClientId: {Value: !Ref SymptomOAuthClient}
+  DashboardOAuthClientId: {Value: !Ref SymptomDashboardOAuthClient}
+  DashboardOrigin: {Value: !Ref DashboardOrigin}
   OAuthScopes: {Value: 'openid email planelocket-symptoms/read planelocket-symptoms/write'}
   CognitoUserPoolId: {Value: !Ref SymptomUserPool}
   SymptomTableName: {Value: !Ref SymptomTable}
