@@ -36,7 +36,7 @@ Resources:
       CorsConfiguration:
         AllowOrigins: [!Ref DashboardOrigin]
         AllowHeaders: [Authorization, Content-Type]
-        AllowMethods: [GET, OPTIONS]
+        AllowMethods: [GET, POST, OPTIONS]
         MaxAge: 600
   PaginationCursorSecret:
     Type: AWS::SecretsManager::Secret
@@ -65,7 +65,7 @@ Resources:
         CorsRules:
           - AllowedHeaders: ['*']
             AllowedMethods: [PUT]
-            AllowedOrigins: ['*']
+            AllowedOrigins: [!Ref DashboardOrigin]
             ExposedHeaders: [ETag]
             MaxAge: 300
       LifecycleConfiguration:
@@ -185,6 +185,7 @@ Resources:
         - openid
         - email
         - planelocket-symptoms/read
+        - planelocket-symptoms/write
       CallbackURLs: !Ref DashboardCallbackUrls
       LogoutURLs: !Ref DashboardLogoutUrls
       SupportedIdentityProviders: [COGNITO]
@@ -241,6 +242,8 @@ Resources:
         EntryDelete: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}', Method: DELETE}}
         EntryAttachmentsGet: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}/attachments', Method: GET}}
         EntryAttachmentGet: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}/attachments/{attachment_id}', Method: GET}}
+        EntryAttachmentStart: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}/attachments/start', Method: POST}}
+        EntryAttachmentComplete: {Type: HttpApi, Properties: {Path: '/entries/{entry_id}/attachments/{attachment_id}/complete', Method: POST}}
         ReportsSummary: {Type: HttpApi, Properties: {Path: /reports/summary, Method: GET}}
         ReportsTimeline: {Type: HttpApi, Properties: {Path: /reports/timeline, Method: GET}}
         ReportsSymptoms: {Type: HttpApi, Properties: {Path: /reports/symptoms, Method: GET}}

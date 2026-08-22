@@ -156,10 +156,22 @@ planelocket-symptoms/write
 
 The dashboard uses a separate public Cognito application client with
 authorization code plus PKCE and no client secret. Its default callback is
-`https://health.loopers.space/callback`; it receives only `openid`, `email`,
-and `planelocket-symptoms/read`. API CORS permits only the configured
+`https://health.loopers.space/callback`; it receives `openid`, `email`,
+`planelocket-symptoms/read`, and `planelocket-symptoms/write` so an authenticated
+person can use the manual-entry page. API CORS permits only the configured
 `DashboardOrigin`. Never place the confidential ChatGPT client secret in the
 dashboard repository or browser bundle.
+
+The dashboard can create entries through `POST /entries`, start a verified
+private upload through `POST /entries/{entry_id}/attachments/start`, and confirm
+it through `POST /entries/{entry_id}/attachments/{attachment_id}/complete`.
+Uploads still go directly to the private S3 bucket through a five-minute signed
+URL and receive the same type, size, and file-signature checks as MCP uploads.
+
+Clinician report JSON includes attachment metadata and a private API download
+path, never an S3 object key. Generated PDFs contain an attachment appendix;
+JPEG and PNG files up to 5 MiB are embedded (at most five images), while PDF and
+HEIC originals remain accessible only through authenticated dashboard links.
 
 ## Local validation
 

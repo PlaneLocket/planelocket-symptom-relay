@@ -22,7 +22,7 @@ import pdf_reports
 
 LOG = logging.getLogger()
 LOG.setLevel(logging.INFO)
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 MAX_BODY_BYTES = 64 * 1024
 MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 MAX_ATTACHMENTS_PER_ENTRY = 10
@@ -104,7 +104,7 @@ def cors_headers():
         return {}
     return {
         "access-control-allow-origin": origin,
-        "access-control-allow-methods": "GET,OPTIONS",
+        "access-control-allow-methods": "GET,POST,OPTIONS",
         "access-control-allow-headers": "Authorization,Content-Type",
         "access-control-max-age": "600",
         "vary": "Origin",
@@ -673,10 +673,42 @@ def report_attachments(claims, entries):
         if not exclusive_start_key:
             break
     return [
-        {**public_attachment(item), "occurred_at": timestamps[item["entry_id"]]}
+        {
+            **public_attachment(item),
+            "object_key": item["object_key"],
+            "occurred_at": timestamps[item["entry_id"]],
+            "download_path": f'/entries/{item["entry_id"]}/attachments/{item["attachment_id"]}',
+        }
         for item in items
         if item.get("status") == "ready" and item.get("entry_id") in timestamps
     ]
+
+
+def public_report(report):
+    """Remove storage-only attachment fields before returning report JSON."""
+    result = dict(report)
+    result["attachments"] = [
+        {key: value for key, value in item.items() if key != "object_key"}
+        for item in report.get("attachments", [])
+    ]
+    if "ecg_attachments" in report:
+        result["ecg_attachments"] = [
+            {key: value for key, value in item.items() if key != "object_key"}
+            for item in report.get("ecg_attachments", [])
+        ]
+    return result
+
+
+def load_report_attachment(item):
+    if item.get("content_type") not in {"image/jpeg", "image/png"}:
+        return None
+    if int(item.get("size_bytes") or 0) > 5 * 1024 * 1024:
+        return None
+    try:
+        return s3().get_object(Bucket=os.environ["ATTACHMENT_BUCKET"], Key=item["object_key"])["Body"].read()
+    except Exception as exc:
+        LOG.info("Unable to embed report attachment %s: %s", item.get("attachment_id"), type(exc).__name__)
+        return None
 
 
 def update_entry(claims, entry_id, patch):
@@ -825,6 +857,7 @@ def openapi_document(event):
     read_scope, write_scope = os.environ["ACTION_READ_SCOPE"], os.environ["ACTION_WRITE_SCOPE"]
     auth = {"type": "oauth2", "flows": {"authorizationCode": {"authorizationUrl": os.environ["COGNITO_AUTHORIZATION_ENDPOINT"], "tokenUrl": os.environ["COGNITO_TOKEN_ENDPOINT"], "scopes": {read_scope: "Read personal symptom entries", write_scope: "Write personal symptom entries"}}}}
     read_operation = lambda operation_id, description: {"operationId": operation_id, "security": [{"cognitoOAuth": [read_scope]}], "responses": {"200": {"description": description}}}
+    write_operation = lambda operation_id, description: {"operationId": operation_id, "security": [{"cognitoOAuth": [write_scope]}], "responses": {"200": {"description": description}}}
     paths = {
         "/entries": {
             "get": read_operation("listSymptomEntries", "Personal symptom entries"),
@@ -837,6 +870,8 @@ def openapi_document(event):
         "/reports/export": {"get": read_operation("exportSymptomOccurrences", "CSV symptom export")},
         "/reports/clinician-report": {"get": read_operation("getClinicianReport", "Cardiology or rheumatology report as JSON or PDF")},
         "/entries/{entry_id}/attachments": {"get": read_operation("listEntryAttachments", "Private attachment index")},
+        "/entries/{entry_id}/attachments/start": {"post": write_operation("startEntryAttachmentUpload", "Private attachment upload started")},
+        "/entries/{entry_id}/attachments/{attachment_id}/complete": {"post": write_operation("completeEntryAttachmentUpload", "Private attachment verified and attached")},
         "/entries/{entry_id}/attachments/{attachment_id}": {"get": read_operation("getEntryAttachment", "Short-lived private attachment download")},
     }
     return {"openapi": "3.1.0", "info": {"title": "PlaneLocket Symptom Log", "version": VERSION}, "servers": [{"url": base}], "components": {"securitySchemes": {"cognitoOAuth": auth}, "schemas": {"Entry": entry_schema()}}, "paths": paths}
@@ -895,9 +930,9 @@ def lambda_handler(event: dict[str, Any], context: Any):
                     raise RelayError(400, str(exc)) from exc
                 output_format = query.get("format", "json").casefold()
                 if output_format == "json":
-                    return response(200, report)
+                    return response(200, public_report(report))
                 if output_format == "pdf":
-                    return binary_response(200, pdf_reports.build_pdf(report), "application/pdf", f"{specialty.casefold()}-symptom-report.pdf")
+                    return binary_response(200, pdf_reports.build_pdf(report, load_report_attachment), "application/pdf", f"{specialty.casefold()}-symptom-report.pdf")
                 raise RelayError(400, "format must be json or pdf.")
             return response(404, {"message": "Report route not found."})
         if method == "GET" and re.fullmatch(r"/entries/[^/]+/attachments", path):
@@ -906,6 +941,18 @@ def lambda_handler(event: dict[str, Any], context: Any):
         if method == "GET" and re.fullmatch(r"/entries/[^/]+/attachments/[0-9a-f-]{36}", path):
             parts = path.split("/")
             return response(200, get_attachment_download(authenticate(event, os.environ["ACTION_READ_SCOPE"]), parts[2], parts[4]))
+        if method == "POST" and re.fullmatch(r"/entries/[^/]+/attachments/start", path):
+            entry_id = path.split("/", 3)[2]
+            body = parse_body(event)
+            return response(201, start_attachment_upload(
+                authenticate(event, os.environ["ACTION_WRITE_SCOPE"]), entry_id,
+                body.get("filename"), body.get("content_type"), body.get("size_bytes"),
+            ))
+        if method == "POST" and re.fullmatch(r"/entries/[^/]+/attachments/[0-9a-f-]{36}/complete", path):
+            parts = path.split("/")
+            return response(200, complete_attachment_upload(
+                authenticate(event, os.environ["ACTION_WRITE_SCOPE"]), parts[2], parts[4],
+            ))
         if path.startswith("/entries/") and method == "PUT":
             return response(200, update_entry(authenticate(event, os.environ["ACTION_WRITE_SCOPE"]), path.split("/", 2)[2], parse_body(event)))
         if path.startswith("/entries/") and method == "DELETE":
