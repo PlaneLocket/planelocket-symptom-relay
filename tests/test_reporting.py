@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src" / "symptom_relay"))
 import reporting
+import pdf_reports
 
 
 def entries():
@@ -71,3 +72,54 @@ def test_occurrence_csv_neutralizes_spreadsheet_formulas():
     values[0]["original_text"] = "=HYPERLINK(\"https://example.test\")"
     parsed = list(csv.DictReader(io.StringIO(reporting.occurrences_csv(reporting.normalize_entries(values)))))
     assert parsed[0]["original_text"].startswith("'=")
+
+
+def test_cardiology_report_has_time_distribution_context_and_disclosures():
+    values = entries()
+    rows = reporting.normalize_entries(values)
+    result = reporting.clinician_report(
+        "cardiology", values, rows,
+        [{"filename": "ecg-20260821.pdf", "occurred_at": values[0]["occurred_at"]}],
+        "2026-08-21T05:00:00.000000Z", "2026-08-23T04:59:59.000000Z",
+    )
+    assert result["summary"]["count"] == 2
+    assert sum(result["time_of_day"].values()) == 2
+    assert result["ecg_attachments"][0]["filename"].startswith("ecg-")
+    assert "not a diagnosis" in result["disclosures"][0]
+
+
+def test_rheumatology_report_detects_only_transparent_possible_flares():
+    values = []
+    for day in range(1, 11):
+        severity = 3 if day <= 7 else 7
+        values.append({
+            "entry_id": str(day),
+            "occurred_at": f"2026-08-{day:02d}T14:00:00.000000Z",
+            "symptoms": [{"name": "morning stiffness", "severity": severity, "location": "back"}],
+        })
+    result = reporting.clinician_report(
+        "rheumatology", values, reporting.normalize_entries(values), [],
+        "2026-08-01T05:00:00.000000Z", "2026-08-11T04:59:59.000000Z",
+    )
+    assert result["morning_stiffness"]["count"] == 10
+    assert result["possible_flares"][0]["label"] == "possible flare"
+    assert result["possible_flares"][0]["start"] == "2026-08-08"
+    assert "3 consecutive logged days" in result["flare_rule"]
+
+
+def test_clinician_pdf_is_a_real_multipage_pdf():
+    values = []
+    for index in range(45):
+        values.append({
+            "entry_id": str(index),
+            "occurred_at": f"2026-08-{(index % 20) + 1:02d}T18:00:00.000000Z",
+            "symptoms": [{"name": "PVCs", "severity": index % 10}],
+            "original_text": "Patient wording retained for clinician review.",
+        })
+    report = reporting.clinician_report(
+        "cardiology", values, reporting.normalize_entries(values), [],
+        "2026-08-01T05:00:00.000000Z", "2026-08-31T04:59:59.000000Z",
+    )
+    pdf = pdf_reports.build_pdf(report)
+    assert pdf.startswith(b"%PDF-")
+    assert len(pdf) > 5000
