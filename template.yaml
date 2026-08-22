@@ -246,6 +246,7 @@ Resources:
         ReportsSymptoms: {Type: HttpApi, Properties: {Path: /reports/symptoms, Method: GET}}
         ReportsCorrelations: {Type: HttpApi, Properties: {Path: /reports/correlations, Method: GET}}
         ReportsExport: {Type: HttpApi, Properties: {Path: /reports/export, Method: GET}}
+        ReportsClinician: {Type: HttpApi, Properties: {Path: /reports/clinician-report, Method: GET}}
         ReportsOptions: {Type: HttpApi, Properties: {Path: '/reports/{proxy+}', Method: OPTIONS}}
 
 Outputs:

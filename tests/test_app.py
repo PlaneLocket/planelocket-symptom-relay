@@ -320,3 +320,25 @@ def test_report_options_is_unauthenticated_and_cors_enabled():
     assert result["headers"]["access-control-allow-origin"] == "https://health.loopers.space"
     assert result["headers"]["access-control-allow-methods"] == "GET,OPTIONS"
     assert result["headers"]["access-control-allow-headers"] == "Authorization,Content-Type"
+
+
+def test_clinician_report_json_route_is_oauth_protected(environment, monkeypatch):
+    claims = {"sub": "person-a"}
+    app.create_entry(claims, {
+        "occurred_at": "2026-08-21T12:00:00Z",
+        "symptoms": [{"name": "PVCs", "severity": 5}],
+    })
+    monkeypatch.setattr(app, "authenticate", lambda event, scope: claims)
+    event = api_event("GET", "/reports/clinician-report")
+    event["queryStringParameters"] = {
+        "specialty": "cardiology",
+        "format": "json",
+        "since": "2026-08-21T00:00:00Z",
+        "until": "2026-08-22T00:00:00Z",
+    }
+    result = app.lambda_handler(event, None)
+    payload = json.loads(result["body"])
+    assert result["statusCode"] == 200
+    assert payload["report_type"] == "cardiology"
+    assert payload["summary"]["count"] == 1
+    assert result["headers"]["access-control-allow-origin"] == "https://health.loopers.space"
