@@ -67,16 +67,33 @@ def dynamodb_value(value):
 
 
 def response(status: int, body: Any, headers: dict[str, str] | None = None):
-    result_headers = {"content-type": "application/json; charset=utf-8", "cache-control": "no-store"}
+    result_headers = {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        **cors_headers(),
+    }
     result_headers.update(headers or {})
     return {"statusCode": status, "headers": result_headers, "body": json.dumps(body, default=json_default)}
 
 
 def text_response(status, body, content_type, filename=None):
-    headers = {"content-type": content_type, "cache-control": "no-store"}
+    headers = {"content-type": content_type, "cache-control": "no-store", **cors_headers()}
     if filename:
         headers["content-disposition"] = f'attachment; filename="{filename}"'
     return {"statusCode": status, "headers": headers, "body": body}
+
+
+def cors_headers():
+    origin = os.environ.get("DASHBOARD_ORIGIN")
+    if not origin:
+        return {}
+    return {
+        "access-control-allow-origin": origin,
+        "access-control-allow-methods": "GET,OPTIONS",
+        "access-control-allow-headers": "Authorization,Content-Type",
+        "access-control-max-age": "600",
+        "vary": "Origin",
+    }
 
 
 def table():
@@ -681,6 +698,8 @@ def openapi_document(event):
 def lambda_handler(event: dict[str, Any], context: Any):
     try:
         method, path = method_path(event)
+        if method == "OPTIONS" and path.startswith("/reports/"):
+            return {"statusCode": 204, "headers": cors_headers(), "body": ""}
         if method == "GET" and path == "/.well-known/oauth-protected-resource/mcp":
             return response(200, mcp_metadata(event))
         if method == "POST" and path == "/mcp":
