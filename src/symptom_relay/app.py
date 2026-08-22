@@ -560,11 +560,25 @@ def report_data(claims, query):
 
 
 def report_attachments(claims, entries):
-    indexed = []
-    for entry in entries:
-        for attachment in list_attachments(claims, entry["entry_id"])["attachments"]:
-            indexed.append({**attachment, "occurred_at": entry["occurred_at"]})
-    return indexed
+    timestamps = {entry["entry_id"]: entry["occurred_at"] for entry in entries}
+    items, exclusive_start_key = [], None
+    while True:
+        kwargs = {
+            "KeyConditionExpression": Key("PK").eq(owner_key(claims)) & Key("SK").begins_with("ATTACHMENT#"),
+            "ScanIndexForward": True,
+        }
+        if exclusive_start_key:
+            kwargs["ExclusiveStartKey"] = exclusive_start_key
+        result = table().query(**kwargs)
+        items.extend(result.get("Items", []))
+        exclusive_start_key = result.get("LastEvaluatedKey")
+        if not exclusive_start_key:
+            break
+    return [
+        {**public_attachment(item), "occurred_at": timestamps[item["entry_id"]]}
+        for item in items
+        if item.get("status") == "ready" and item.get("entry_id") in timestamps
+    ]
 
 
 def update_entry(claims, entry_id, patch):
