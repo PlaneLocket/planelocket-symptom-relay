@@ -216,6 +216,7 @@ Resources:
           COGNITO_ISSUER: !Sub https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${SymptomUserPool}
           COGNITO_JWKS_URL: !Sub https://cognito-idp.${AWS::Region}.${AWS::URLSuffix}/${SymptomUserPool}/.well-known/jwks.json
           COGNITO_CLIENT_ID: !Ref SymptomOAuthClient
+          COGNITO_DASHBOARD_CLIENT_ID: !Ref SymptomDashboardOAuthClient
           COGNITO_AUTHORIZATION_ENDPOINT: !Sub https://planelocket-symptoms-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/oauth2/authorize
           COGNITO_TOKEN_ENDPOINT: !Sub https://planelocket-symptoms-${AWS::AccountId}.auth.${AWS::Region}.amazoncognito.com/oauth2/token
           ACTION_READ_SCOPE: planelocket-symptoms/read
