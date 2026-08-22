@@ -36,6 +36,12 @@ def normalize_entries(entries, timezone_name=REPORTING_TIMEZONE):
     for entry in entries:
         occurred = datetime.fromisoformat(entry["occurred_at"].replace("Z", "+00:00"))
         local = occurred.astimezone(zone)
+        context = entry.get("context") or {}
+        wellness = context.get("wellness") or {}
+        activity = context.get("activity") or {}
+        hydration = context.get("hydration") or {}
+        weather = context.get("weather") or {}
+        treatment = context.get("treatment") or {}
         for index, symptom in enumerate(entry.get("symptoms") or []):
             raw, canonical, group = canonical_symptom(symptom.get("name"))
             rows.append({
@@ -52,6 +58,33 @@ def normalize_entries(entries, timezone_name=REPORTING_TIMEZONE):
                 "location": symptom.get("location"),
                 "symptom_notes": symptom.get("notes"),
                 "sleep_hours": entry.get("sleep_hours"),
+                "context_source": context.get("source"),
+                "resting_heart_rate_bpm": wellness.get("resting_heart_rate_bpm"),
+                "average_stress": wellness.get("average_stress"),
+                "hrv_ms": wellness.get("hrv_ms"),
+                "body_battery_high": wellness.get("body_battery_high"),
+                "body_battery_low": wellness.get("body_battery_low"),
+                "sleep_score": wellness.get("sleep_score"),
+                "steps": wellness.get("steps"),
+                "activity_type": activity.get("type"),
+                "activity_duration_minutes": activity.get("duration_minutes"),
+                "activity_intensity_minutes": activity.get("intensity_minutes"),
+                "activity_distance_km": activity.get("distance_km"),
+                "activity_calories": activity.get("calories"),
+                "activity_average_heart_rate_bpm": activity.get("average_heart_rate_bpm"),
+                "activity_max_heart_rate_bpm": activity.get("max_heart_rate_bpm"),
+                "hydration_fluid_ml": hydration.get("fluid_ml"),
+                "hydration_sodium_mg": hydration.get("sodium_mg"),
+                "hydration_potassium_mg": hydration.get("potassium_mg"),
+                "hydration_magnesium_mg": hydration.get("magnesium_mg"),
+                "hydration_carbohydrate_g": hydration.get("carbohydrate_g"),
+                "weather_temperature_f": weather.get("temperature_f"),
+                "weather_feels_like_f": weather.get("feels_like_f"),
+                "weather_humidity_percent": weather.get("humidity_percent"),
+                "weather_dew_point_f": weather.get("dew_point_f"),
+                "treatment_name": treatment.get("name"),
+                "treatment_dose": treatment.get("dose"),
+                "treatment_event": treatment.get("event"),
                 "medications": entry.get("medications") or [],
                 "tags": entry.get("tags") or [],
                 "entry_notes": entry.get("notes"),
@@ -103,12 +136,38 @@ def summary(entries, rows, since, until):
         "mean_severity": round(statistics.fmean(severities), 2) if severities else None,
         "max_severity": max(severities) if severities else None,
         "symptoms": symptoms,
+        "context_coverage": context_coverage(entries),
         "coverage": coverage(entries, since, until),
     }
 
 
+def context_coverage(entries):
+    sections = ("wellness", "activity", "hydration", "weather", "treatment")
+    observed = {section: 0 for section in sections}
+    fields = defaultdict(int)
+    for entry in entries:
+        context = entry.get("context") or {}
+        for section in sections:
+            values = context.get(section) or {}
+            if values:
+                observed[section] += 1
+                for field, value in values.items():
+                    if value is not None:
+                        fields[f"{section}.{field}"] += 1
+    return {
+        "entry_count": len(entries),
+        "entries_by_section": observed,
+        "observations_by_field": dict(sorted(fields.items())),
+        "warning": "Context is reported only when logged; missing fields are not interpreted as zero or absent.",
+    }
+
+
 def timeline(entries, rows, since, until):
-    days = defaultdict(lambda: {"entry_ids": set(), "rows": [], "sleep": []})
+    days = defaultdict(lambda: {"entry_ids": set(), "rows": [], "sleep": [], "entries": []})
+    zone = ZoneInfo(REPORTING_TIMEZONE)
+    for entry in entries:
+        date = datetime.fromisoformat(entry["occurred_at"].replace("Z", "+00:00")).astimezone(zone).date().isoformat()
+        days[date]["entries"].append(entry)
     for row in rows:
         day = days[row["local_date"]]
         day["entry_ids"].add(row["entry_id"])
@@ -126,6 +185,7 @@ def timeline(entries, rows, since, until):
             "mean_severity": round(statistics.fmean(scores), 2) if scores else None,
             "max_severity": max(scores) if scores else None,
             "sleep_hours": round(statistics.fmean(day["sleep"]), 2) if day["sleep"] else None,
+            "context_coverage": context_coverage(day["entries"]),
             "data_status": "logged",
         })
     return {"period": {"since": since, "until": until, "timezone": REPORTING_TIMEZONE}, "series": series, "coverage": coverage(entries, since, until)}
@@ -156,7 +216,18 @@ def sleep_association(entries, rows, outcome):
 
 
 def occurrences_csv(rows):
-    fields = ["occurred_at", "local_date", "local_hour", "symptom_name", "canonical_symptom", "symptom_group", "severity", "location", "symptom_notes", "sleep_hours", "medications", "tags", "entry_notes", "original_text", "entry_id"]
+    fields = [
+        "occurred_at", "local_date", "local_hour", "symptom_name", "canonical_symptom", "symptom_group",
+        "severity", "location", "symptom_notes", "sleep_hours", "context_source",
+        "resting_heart_rate_bpm", "average_stress", "hrv_ms", "body_battery_high", "body_battery_low",
+        "sleep_score", "steps", "activity_type", "activity_duration_minutes", "activity_intensity_minutes",
+        "activity_distance_km", "activity_calories", "activity_average_heart_rate_bpm",
+        "activity_max_heart_rate_bpm", "hydration_fluid_ml", "hydration_sodium_mg",
+        "hydration_potassium_mg", "hydration_magnesium_mg", "hydration_carbohydrate_g",
+        "weather_temperature_f", "weather_feels_like_f", "weather_humidity_percent", "weather_dew_point_f",
+        "treatment_name", "treatment_dose", "treatment_event", "medications", "tags", "entry_notes",
+        "original_text", "entry_id",
+    ]
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=fields, extrasaction="ignore")
     writer.writeheader()
@@ -197,13 +268,19 @@ def _entry_context(entries):
     result = {"sleep_observations": 0, "exercise_or_effort_entries": 0, "hydration_entries": 0, "weather_entries": 0}
     medication_markers = []
     for entry in entries:
+        context = entry.get("context") or {}
         text = " ".join([str(entry.get("original_text") or ""), str(entry.get("notes") or ""), " ".join(entry.get("tags") or [])])
         result["sleep_observations"] += int(entry.get("sleep_hours") is not None)
-        result["exercise_or_effort_entries"] += int(bool(exercise_terms.search(text)))
-        result["hydration_entries"] += int(bool(hydration_terms.search(text)))
-        result["weather_entries"] += int(bool(weather_terms.search(text)))
+        result["exercise_or_effort_entries"] += int(bool(context.get("activity")) or bool(exercise_terms.search(text)))
+        result["hydration_entries"] += int(bool(context.get("hydration")) or bool(hydration_terms.search(text)))
+        result["weather_entries"] += int(bool(context.get("weather")) or bool(weather_terms.search(text)))
         if entry.get("medications"):
             medication_markers.append({"occurred_at": entry["occurred_at"], "medications": entry["medications"]})
+        treatment = context.get("treatment") or {}
+        if treatment:
+            label = " ".join(str(treatment.get(key) or "").strip() for key in ("name", "dose", "event")).strip()
+            medication_markers.append({"occurred_at": entry["occurred_at"], "medications": [label]})
+    result["normalized_context_coverage"] = context_coverage(entries)
     result["medication_markers"] = medication_markers
     return result
 
